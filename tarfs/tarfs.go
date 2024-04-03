@@ -26,7 +26,7 @@ import (
 	"testing/iotest"
 	"time"
 
-	"golang.org/x/exp/slices"
+	"slices"
 )
 
 var emptyReader = iotest.ErrReader(io.EOF)
@@ -60,10 +60,10 @@ func (e Entry) IsDir() bool {
 }
 
 type File struct {
-	fsys   *FS
-	handle io.ReadSeekCloser
-	r      io.Reader
-	Entry  *Entry
+	Entry *Entry
+
+	fsys *FS
+	sr   *io.SectionReader
 }
 
 func (f *File) Stat() (fs.FileInfo, error) {
@@ -71,73 +71,28 @@ func (f *File) Stat() (fs.FileInfo, error) {
 }
 
 func (f *File) Read(p []byte) (int, error) {
-	return f.r.Read(p)
-}
-
-func (f *File) relativeOffset(offset int64, whence int) (int64, error) {
-	switch whence {
-	case io.SeekCurrent:
-		return offset, nil
-	case io.SeekStart:
-		if offset > f.Entry.Header.Size {
-			return 0, fmt.Errorf("offset %d greater than file size %d", offset, f.Entry.Header.Size)
-		}
-	case io.SeekEnd:
-		if offset+f.Entry.Header.Size < 0 {
-			return 0, fmt.Errorf("offset %d greater than file size %d", offset, f.Entry.Header.Size)
-		}
-	default:
-		return 0, fmt.Errorf("invalid whence: %d", whence)
-	}
-
-	return f.Entry.Offset + offset, nil
-}
-
-func (f *File) Seek(offset int64, whence int) (int64, error) {
-	newOffset, err := f.relativeOffset(offset, whence)
-	if err != nil {
-		return 0, err
-	}
-
-	n, err := f.handle.Seek(newOffset, whence)
-	if err != nil {
-		return 0, err
-	}
-
-	return n - f.Entry.Offset, nil
+	return f.sr.Read(p)
 }
 
 func (f *File) ReadAt(p []byte, off int64) (int, error) {
-	// If the underlying ReadSeekCloser implements ReaderAt, just use that.
-	if ra, ok := f.handle.(io.ReaderAt); ok {
-		bytesLeft := f.Entry.Header.Size - off
-		if int64(len(p)) > bytesLeft {
-			p = p[:bytesLeft]
-		}
-		return ra.ReadAt(p, f.Entry.Offset+off)
-	}
+	return f.sr.ReadAt(p, off)
+}
 
-	if f.handle != nil {
-		// Otherwise do a Seek and ReadFull.
-		if _, err := f.handle.Seek(f.Entry.Offset+off, io.SeekStart); err != nil {
-			return 0, err
-		}
-		f.r = io.LimitReader(f.handle, f.Entry.Header.Size-off)
-	}
-
-	return io.ReadFull(f.r, p)
+func (f *File) Seek(offset int64, whence int) (int64, error) {
+	return f.sr.Seek(offset, whence)
 }
 
 func (f *File) Close() error {
-	if f.handle == nil {
-		return nil
-	}
+	return nil
+}
 
-	return f.handle.Close()
+// TODO: Respect n.
+func (f *File) ReadDir(n int) ([]fs.DirEntry, error) {
+	return f.fsys.ReadDir(f.Entry.Header.Name)
 }
 
 type FS struct {
-	open  func() (io.ReadSeekCloser, error)
+	ra    io.ReaderAt
 	files []*Entry
 	index map[string]int
 }
@@ -160,6 +115,18 @@ func (fsys *FS) Readlink(name string) (string, error) {
 
 // Open implements fs.FS.
 func (fsys *FS) Open(name string) (fs.File, error) {
+	if name == "." {
+		return &File{
+			Entry: &Entry{
+				Header: tar.Header{
+					Name: ".",
+				},
+				fi: root{},
+			},
+			fsys: fsys,
+		}, nil
+	}
+
 	i, ok := fsys.index[name]
 	if !ok {
 		return nil, fs.ErrNotExist
@@ -168,41 +135,17 @@ func (fsys *FS) Open(name string) (fs.File, error) {
 	e := fsys.files[i]
 
 	f := &File{
-		fsys:  fsys,
 		Entry: e,
+		fsys:  fsys,
+		// TODO: Use SectionOpener if fsys.ra implements it.
+		sr: io.NewSectionReader(fsys.ra, e.Offset, e.Header.Size),
 	}
-
-	if e.Header.Size == 0 {
-		f.r = emptyReader
-		return f, nil
-	}
-
-	rc, err := fsys.OpenAt(e.Offset)
-	if err != nil {
-		return nil, err
-	}
-	f.handle = rc
-	f.r = io.LimitReader(rc, e.Header.Size)
 
 	return f, nil
 }
 
 func (fsys *FS) Entries() []*Entry {
 	return fsys.files
-}
-
-func (fsys *FS) OpenAt(offset int64) (io.ReadSeekCloser, error) {
-	// TODO: We can use ReadAt to avoid opening the file multiple times.
-	f, err := fsys.open()
-	if err != nil {
-		return nil, err
-	}
-
-	if _, err := f.Seek(offset, io.SeekStart); err != nil {
-		return nil, err
-	}
-
-	return f, nil
 }
 
 type root struct{}
@@ -231,7 +174,7 @@ func (fsys *FS) Stat(name string) (fs.FileInfo, error) {
 func (fsys *FS) ReadDir(name string) ([]fs.DirEntry, error) {
 	children := []fs.DirEntry{}
 	for _, f := range fsys.files {
-		// This is load bearing.
+		// This is load bearing for now.
 		f := f
 
 		if f.dir != name {
@@ -259,23 +202,35 @@ func (cr *countReader) Read(p []byte) (int, error) {
 	return n, err
 }
 
-// TODO: Sometimes we only have an io.ReadSeeker or io.ReaderAt.
-func New(open func() (io.ReadSeekCloser, error)) (*FS, error) {
+func New(ra io.ReaderAt) (*FS, error) {
 	fsys := &FS{
-		open:  open,
+		ra:    ra,
 		files: []*Entry{},
 		index: map[string]int{},
 	}
 
-	// TODO: Consider caching this across builds.
-	r, err := open()
-	if err != nil {
-		return nil, err
+	var r io.Reader
+	if reader, ok := ra.(io.Reader); ok {
+		r = reader
+	} else {
+		size := int64(-1)
+		if statter, ok := ra.(interface {
+			Stat() (fs.FileInfo, error)
+		}); ok {
+			stat, err := statter.Stat()
+			if err != nil {
+				return nil, err
+			}
+			size = stat.Size()
+		}
+		r = io.NewSectionReader(ra, 0, size)
 	}
-	defer r.Close()
 
 	cr := &countReader{bufio.NewReaderSize(r, 1<<20), 0}
 	tr := tar.NewReader(cr)
+
+	// TODO: Do this lazily.
+	// TODO: Allow this to be saved and restored.
 	for {
 		hdr, err := tr.Next()
 		if errors.Is(err, io.EOF) {

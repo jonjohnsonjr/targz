@@ -10,12 +10,11 @@ import (
 	"bufio"
 	"encoding/binary"
 	"errors"
-	"fmt"
 	"hash/crc32"
 	"io"
 	"time"
 
-	"github.com/jonjohnsonjr/targz/sgzip/internal/flate"
+	"github.com/jonjohnsonjr/targz/gsip/internal/flate"
 )
 
 const (
@@ -90,11 +89,10 @@ type Reader struct {
 	multistream  bool
 
 	// Jon hacking
-	out         int64
-	span        int64
-	from        *flate.Checkpoint
-	updates     chan *flate.Checkpoint
-	checkpoints []*flate.Checkpoint
+	out     int64
+	span    int64
+	from    *flate.Checkpoint
+	updates chan *flate.Checkpoint
 
 	last *flate.Checkpoint
 }
@@ -106,26 +104,24 @@ type Reader struct {
 // It is the caller's responsibility to call Close on the Reader when done.
 //
 // The Reader.Header fields will be valid in the Reader returned.
-func NewReader(r io.Reader) (*Reader, error) {
-	return NewReaderWithSpans(r, 1<<22)
+func NewReader(r io.Reader, updates chan *flate.Checkpoint) (*Reader, error) {
+	return NewReaderWithSpans(r, 1<<22, updates)
 }
 
-func NewReaderWithSpans(r io.Reader, span int64) (*Reader, error) {
+func NewReaderWithSpans(r io.Reader, span int64, updates chan *flate.Checkpoint) (*Reader, error) {
 	z := new(Reader)
 	z.span = span
-	z.checkpoints = []*flate.Checkpoint{}
-	z.updates = make(chan *flate.Checkpoint, 10)
+	z.updates = updates
 	if err := z.Reset(r); err != nil {
 		return nil, err
 	}
 	return z, nil
 }
 
-func Continue(r io.Reader, span int64, from *flate.Checkpoint, checkpoints []*flate.Checkpoint) (*Reader, error) {
+func Continue(r io.Reader, span int64, from *flate.Checkpoint, updates chan *flate.Checkpoint) (*Reader, error) {
 	z := new(Reader)
 	z.span = span
-	z.checkpoints = checkpoints
-	z.updates = make(chan *flate.Checkpoint, 10)
+	z.updates = updates
 	z.from = from
 	if err := z.Reset(r); err != nil {
 		return nil, err
@@ -348,9 +344,6 @@ func (z *Reader) Read(p []byte) (n int, err error) {
 
 	for n == 0 {
 		n, z.err = z.decompressor.Read(p)
-		for len(z.updates) != 0 {
-			z.checkpoints = append(z.checkpoints, <-z.updates)
-		}
 		z.digest = crc32.Update(z.digest, crc32.IEEETable, p[:n])
 		z.size += uint32(n)
 		z.out += int64(n)
@@ -389,31 +382,6 @@ func (z *Reader) Read(p []byte) (n int, err error) {
 	return n, nil
 }
 
-func (z *Reader) Seek(offset int64, whence int) (int64, error) {
-	if whence != io.SeekStart {
-		return 0, fmt.Errorf("support seek whence %d", whence)
-	}
-
-	var highest *flate.Checkpoint
-	for _, checkpoint := range z.checkpoints {
-		if checkpoint.Out > offset {
-			break
-		}
-
-		highest = checkpoint
-	}
-
-	if highest == nil {
-		return 0, fmt.Errorf("what does it mean if there's no highest???")
-	}
-
-	if _, err := z.decompressor.ResetTo(highest); err != nil {
-		return 0, fmt.Errorf("inner Seek: %w", err)
-	}
-
-	return 0, fmt.Errorf("implement sgzip.Seek")
-}
-
 // Close closes the Reader. It does not close the underlying io.Reader.
 // In order for the GZIP checksum to be verified, the reader must be
 // fully consumed until the io.EOF.
@@ -435,4 +403,8 @@ func (c *countReader) ReadByte() (b byte, err error) {
 	b, err = c.r.ReadByte()
 	c.n += 1
 	return
+}
+
+func (z *Reader) Offset() int64 {
+	return z.decompressor.Woffset() - z.decompressor.ToRead()
 }

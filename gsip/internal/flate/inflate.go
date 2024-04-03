@@ -889,6 +889,10 @@ func (f *Decompressor) Woffset() int64 {
 	return f.woffset
 }
 
+func (f *Decompressor) ToRead() int64 {
+	return int64(len(f.toRead))
+}
+
 func (f *Decompressor) Reset(r io.Reader, dict []byte, roffset int64) error {
 	*f = Decompressor{
 		r:        makeReader(r),
