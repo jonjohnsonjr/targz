@@ -69,6 +69,8 @@ func NewReader(ra io.ReaderAt, size int64) (*Reader, error) {
 
 func (r *Reader) ReadAt(p []byte, off int64) (int, error) {
 	// TODO: Appropriate locking around this for concurrency.
+	// TODO: Even if we don't find an exact match, one of these might be reusable.
+	// TODO: Consider a fixed size pool of these that signal they're done via Close().
 	for _, zr := range r.readers {
 		if zr.Offset() == off {
 			return io.ReadFull(zr, p)
@@ -89,7 +91,7 @@ func (r *Reader) ReadAt(p []byte, off int64) (int, error) {
 	}
 
 	// TODO: minimize the size based on other checkpoints.
-	sr := io.NewSectionReader(r.ra, highest.In, r.size)
+	sr := io.NewSectionReader(r.ra, highest.In, r.size-highest.In)
 
 	// TODO: Less janky!
 	zr, err := gzip.Continue(sr, 0, highest, nil)
@@ -97,7 +99,6 @@ func (r *Reader) ReadAt(p []byte, off int64) (int, error) {
 		return 0, fmt.Errorf("continue: %w", err)
 	}
 
-	// TODO: limited reader?
 	discard := off - highest.Out
 	if _, err := io.CopyN(io.Discard, zr, discard); err != nil {
 		return 0, err
