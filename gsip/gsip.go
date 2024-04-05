@@ -1,23 +1,17 @@
 package gsip
 
 import (
+	"bufio"
 	"fmt"
 	"io"
 
 	"github.com/jonjohnsonjr/targz/gsip/internal/flate"
 	"github.com/jonjohnsonjr/targz/gsip/internal/gzip"
-	"golang.org/x/sync/errgroup"
 )
-
-type index struct {
-	// TODO: Checkpoints.
-}
 
 type Reader struct {
 	ra          io.ReaderAt
 	size        int64
-	zr          *gzip.Reader
-	index       *index
 	updates     chan *flate.Checkpoint
 	checkpoints []*flate.Checkpoint
 	readers     []*gzip.Reader
@@ -26,12 +20,17 @@ type Reader struct {
 func NewReader(ra io.ReaderAt, size int64) (*Reader, error) {
 	updates := make(chan *flate.Checkpoint, 10)
 
-	// This is the first pass reader.
-	// We should do something more clever, but let's start with just discarding through this.
-	// This will give us all the checkpoints we want without touching the gzip package.
+	// This is our first pass frontier reader that sends us updates.
+	// We probably need to do something special to make this work in the face of concurrent ReadAt.
 	sr := io.NewSectionReader(ra, 0, size)
 
-	zr, err := gzip.NewReader(sr, updates)
+	// Add a buffered reader to the "frontier" to make sure we read at least 1MB at a time.
+	// This avoids sending a ton of tiny http requests when using ranger.
+	// TODO: Give callers control over this. Does io.SectionReader.Outer help here?
+	// Should we implement an optional bufio.ReaderAt?
+	br := bufio.NewReaderSize(sr, 1<<20)
+
+	zr, err := gzip.NewReader(br, updates)
 	if err != nil {
 		return nil, err
 	}
@@ -39,41 +38,29 @@ func NewReader(ra io.ReaderAt, size int64) (*Reader, error) {
 	r := &Reader{
 		ra:          ra,
 		size:        size,
-		zr:          zr,
 		updates:     updates,
 		checkpoints: []*flate.Checkpoint{},
-		readers:     []*gzip.Reader{},
+		readers:     []*gzip.Reader{zr},
 	}
 
-	var eg errgroup.Group
-	eg.Go(func() error {
-		defer close(updates)
-
-		_, err := io.Copy(io.Discard, zr)
-		return err
-	})
-	eg.Go(func() error {
+	// TODO: Locking around this to make sure it's safe.
+	// TODO: Make sure we don't leak this goroutine.
+	go func() {
 		for checkpoint := range updates {
 			r.checkpoints = append(r.checkpoints, checkpoint)
 		}
-
-		return nil
-	})
-
-	if err := eg.Wait(); err != nil {
-		return nil, err
-	}
+	}()
 
 	return r, nil
 }
 
-func (r *Reader) ReadAt(p []byte, off int64) (int, error) {
+func (r *Reader) findReader(off int64) (io.Reader, error) {
 	// TODO: Appropriate locking around this for concurrency.
 	// TODO: Even if we don't find an exact match, one of these might be reusable.
 	// TODO: Consider a fixed size pool of these that signal they're done via Close().
 	for _, zr := range r.readers {
 		if zr.Offset() == off {
-			return io.ReadFull(zr, p)
+			return zr, nil
 		}
 	}
 
@@ -87,24 +74,33 @@ func (r *Reader) ReadAt(p []byte, off int64) (int, error) {
 	}
 
 	if highest == nil {
-		return 0, fmt.Errorf("what does it mean if there's no highest???")
+		return nil, fmt.Errorf("no checkpoints available, is this a real gzip archive?")
 	}
 
-	// TODO: minimize the size based on other checkpoints.
+	// TODO: Do we need to bound the size?
 	sr := io.NewSectionReader(r.ra, highest.In, r.size-highest.In)
 
-	// TODO: Less janky!
 	zr, err := gzip.Continue(sr, 0, highest, nil)
 	if err != nil {
-		return 0, fmt.Errorf("continue: %w", err)
+		return nil, fmt.Errorf("continue: %w", err)
 	}
 
+	// TODO: Make sure this doesn't send a bunch of tiny ReadAts.
 	discard := off - highest.Out
 	if _, err := io.CopyN(io.Discard, zr, discard); err != nil {
-		return 0, err
+		return nil, err
 	}
 
 	r.readers = append(r.readers, zr)
+
+	return zr, nil
+}
+
+func (r *Reader) ReadAt(p []byte, off int64) (int, error) {
+	zr, err := r.findReader(off)
+	if err != nil {
+		return 0, err
+	}
 
 	return io.ReadFull(zr, p)
 }

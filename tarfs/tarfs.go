@@ -35,8 +35,9 @@ type Entry struct {
 	Header tar.Header
 	Offset int64
 
-	dir string
-	fi  fs.FileInfo
+	normalized string
+	dir        string
+	fi         fs.FileInfo
 }
 
 func (e Entry) Name() string {
@@ -88,7 +89,7 @@ func (f *File) Close() error {
 
 // TODO: Respect n.
 func (f *File) ReadDir(n int) ([]fs.DirEntry, error) {
-	return f.fsys.ReadDir(f.Entry.Header.Name)
+	return f.fsys.ReadDir(f.Entry.normalized)
 }
 
 type FS struct {
@@ -118,6 +119,8 @@ func (fsys *FS) Open(name string) (fs.File, error) {
 	if name == "." {
 		return &File{
 			Entry: &Entry{
+				dir:        ".",
+				normalized: ".",
 				Header: tar.Header{
 					Name: ".",
 				},
@@ -240,11 +243,27 @@ func New(ra io.ReaderAt) (*FS, error) {
 			return nil, err
 		}
 		fsys.index[hdr.Name] = len(fsys.files)
+
+		normalized := hdr.Name
+
+		// Normalize any weird names like if they end with "/".
+		if strings.HasSuffix(normalized, "/") {
+			normalized = strings.TrimSuffix(normalized, "/")
+		}
+
+		// Or if they start with "./".
+		if strings.HasPrefix(normalized, "./") {
+			normalized = strings.TrimPrefix(normalized, "./")
+		}
+
+		fsys.index[normalized] = len(fsys.files)
+
 		fsys.files = append(fsys.files, &Entry{
-			Header: *hdr,
-			Offset: cr.n,
-			dir:    path.Dir(hdr.Name),
-			fi:     hdr.FileInfo(),
+			Header:     *hdr,
+			Offset:     cr.n,
+			normalized: normalized,
+			dir:        path.Dir(normalized),
+			fi:         hdr.FileInfo(),
 		})
 	}
 
