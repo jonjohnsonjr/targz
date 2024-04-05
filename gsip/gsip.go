@@ -2,6 +2,7 @@ package gsip
 
 import (
 	"bufio"
+	"encoding/json"
 	"fmt"
 	"io"
 
@@ -9,12 +10,40 @@ import (
 	"github.com/jonjohnsonjr/targz/gsip/internal/gzip"
 )
 
+// Index contains the metadata used by [Reader] to skip around a gzip stream.
+// The layout will absolutely change and break you if you depend on it.
+type Index struct {
+	Checkpoints []*flate.Checkpoint
+}
+
 type Reader struct {
 	ra          io.ReaderAt
 	size        int64
 	updates     chan *flate.Checkpoint
 	checkpoints []*flate.Checkpoint
 	readers     []*gzip.Reader
+}
+
+func (r *Reader) Encode(w io.Writer) error {
+	idx := Index{
+		Checkpoints: r.checkpoints,
+	}
+
+	return json.NewEncoder(w).Encode(&idx)
+}
+
+func Decode(ra io.ReaderAt, size int64, index io.Reader) (*Reader, error) {
+	idx := Index{}
+	if err := json.NewDecoder(index).Decode(&idx); err != nil {
+		return nil, err
+	}
+
+	return &Reader{
+		ra:          ra,
+		size:        size,
+		checkpoints: idx.Checkpoints,
+		readers:     []*gzip.Reader{},
+	}, nil
 }
 
 func NewReader(ra io.ReaderAt, size int64) (*Reader, error) {

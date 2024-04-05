@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"net/url"
 )
@@ -27,7 +26,6 @@ func New(ctx context.Context, uri string, rt http.RoundTripper) *Reader {
 }
 
 func (r *Reader) ReadAt(p []byte, off int64) (int, error) {
-	log.Printf("ranger.ReadAt(%d) (len(p) = %d)", off, len(p))
 	req, err := http.NewRequestWithContext(r.ctx, "GET", r.uri, nil)
 	if err != nil {
 		return 0, err

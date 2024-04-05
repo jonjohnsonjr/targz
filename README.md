@@ -30,8 +30,7 @@ For more mature implementations of similar ideas, see:
 ## TODO
 
 * Add tests.
-* Allow save/restore of tarfs table of contents.
-* Allow save/restore of gsip checkpoints.
+* Optimize formats for gsip.Index and tarfs.TOC.
 * Allow incremental indexing of both gsip and tarfs metadata.
 * Make concurrent tarfs access safe.
 * Allow recycling of flate readers.

@@ -17,6 +17,7 @@ package tarfs
 import (
 	"archive/tar"
 	"bufio"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -35,9 +36,9 @@ type Entry struct {
 	Header tar.Header
 	Offset int64
 
-	normalized string
-	dir        string
-	fi         fs.FileInfo
+	Filename string
+	Dir      string
+	fi       fs.FileInfo
 }
 
 func (e Entry) Name() string {
@@ -89,7 +90,7 @@ func (f *File) Close() error {
 
 // TODO: Respect n.
 func (f *File) ReadDir(n int) ([]fs.DirEntry, error) {
-	return f.fsys.ReadDir(f.Entry.normalized)
+	return f.fsys.ReadDir(f.Entry.Filename)
 }
 
 type FS struct {
@@ -119,8 +120,8 @@ func (fsys *FS) Open(name string) (fs.File, error) {
 	if name == "." {
 		return &File{
 			Entry: &Entry{
-				dir:        ".",
-				normalized: ".",
+				Dir:      ".",
+				Filename: ".",
 				Header: tar.Header{
 					Name: ".",
 				},
@@ -147,10 +148,6 @@ func (fsys *FS) Open(name string) (fs.File, error) {
 	return f, nil
 }
 
-func (fsys *FS) Entries() []*Entry {
-	return fsys.files
-}
-
 type root struct{}
 
 func (r root) Name() string       { return "." }
@@ -162,7 +159,9 @@ func (r root) Sys() any           { return nil }
 
 func (fsys *FS) Stat(name string) (fs.FileInfo, error) {
 	if i, ok := fsys.index[name]; ok {
-		return fsys.files[i].fi, nil
+		if f := fsys.files[i]; f != nil {
+			return f.fi, nil
+		}
 	}
 
 	// fs.WalkDir expects "." to return a root entry to bootstrap the walk.
@@ -180,7 +179,7 @@ func (fsys *FS) ReadDir(name string) ([]fs.DirEntry, error) {
 		// This is load bearing for now.
 		f := f
 
-		if f.dir != name {
+		if f.Dir != name {
 			continue
 		}
 
@@ -242,30 +241,54 @@ func New(ra io.ReaderAt) (*FS, error) {
 		if err != nil {
 			return nil, err
 		}
-		fsys.index[hdr.Name] = len(fsys.files)
 
-		normalized := hdr.Name
-
-		// Normalize any weird names like if they end with "/".
-		if strings.HasSuffix(normalized, "/") {
-			normalized = strings.TrimSuffix(normalized, "/")
-		}
-
-		// Or if they start with "./".
-		if strings.HasPrefix(normalized, "./") {
-			normalized = strings.TrimPrefix(normalized, "./")
-		}
-
+		normalized := normalize(hdr.Name)
 		fsys.index[normalized] = len(fsys.files)
 
 		fsys.files = append(fsys.files, &Entry{
-			Header:     *hdr,
-			Offset:     cr.n,
-			normalized: normalized,
-			dir:        path.Dir(normalized),
-			fi:         hdr.FileInfo(),
+			Header:   *hdr,
+			Offset:   cr.n,
+			Filename: normalized,
+			Dir:      path.Dir(normalized),
+			fi:       hdr.FileInfo(),
 		})
 	}
 
 	return fsys, nil
+}
+
+func (fsys *FS) Encode(w io.Writer) error {
+	toc := TOC{
+		Entries: fsys.files,
+	}
+
+	return json.NewEncoder(w).Encode(&toc)
+}
+
+func Decode(ra io.ReaderAt, r io.Reader) (*FS, error) {
+	toc := TOC{}
+	if err := json.NewDecoder(r).Decode(&toc); err != nil {
+		return nil, err
+	}
+
+	fsys := &FS{
+		ra:    ra,
+		files: toc.Entries,
+		index: make(map[string]int, len(toc.Entries)),
+	}
+
+	for i, e := range fsys.files {
+		e.fi = e.Header.FileInfo()
+		fsys.index[e.Filename] = i
+	}
+
+	return fsys, nil
+}
+
+type TOC struct {
+	Entries []*Entry
+}
+
+func normalize(s string) string {
+	return strings.TrimPrefix(strings.TrimSuffix(s, "/"), "./")
 }
