@@ -25,11 +25,11 @@ For more mature implementations of similar ideas, see:
 
 ### ranger
 
-`ranger` doesn't exist yet, but it will implement an `io.ReaderAt` using [HTTP range requests](https://developer.mozilla.org/en-US/docs/Web/HTTP/Range_requests).
+`ranger` implements an `io.ReaderAt` using [HTTP range requests](https://developer.mozilla.org/en-US/docs/Web/HTTP/Range_requests).
 
 ## TODO
 
-* Implement `ranger`.
+* Add tests.
 * Allow save/restore of tarfs table of contents.
 * Allow save/restore of gsip checkpoints.
 * Allow incremental indexing of both gsip and tarfs metadata.
