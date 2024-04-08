@@ -9,7 +9,6 @@ package flate
 
 import (
 	"bufio"
-	"fmt"
 	"io"
 	"math"
 	"math/bits"
@@ -386,6 +385,10 @@ type Decompressor struct {
 	span    int64
 	last    int64
 	updates chan<- *Checkpoint
+
+	// block stuff
+	minRef    int64
+	lastBlock Checkpoint
 }
 
 func (f *Decompressor) nextBlock() {
@@ -394,6 +397,7 @@ func (f *Decompressor) nextBlock() {
 			return
 		}
 	}
+	f.minRef = -1
 	f.final = f.b&1 == 1
 	f.b >>= 1
 	typ := f.b & 3
@@ -687,6 +691,15 @@ readLiteral:
 			return
 		}
 
+		// minref := (f.woffset + int64(f.dict.rdPos) + int64(f.dict.wrPos)) - int64(dist)
+		// minref := f.woffset - int64(dist) + int64(f.dict.availRead())
+		// minref := f.woffset - int64(dist) - int64(f.dict.wrPos)
+		minref := f.woffset + int64(f.dict.availRead()) - int64(dist)
+		if f.minRef == -1 {
+			f.minRef = minref
+		}
+		f.minRef = min(f.minRef, minref)
+
 		f.copyLen, f.copyDist = length, dist
 		goto copyHistory
 	}
@@ -738,6 +751,7 @@ func (f *Decompressor) dataBlock() {
 	}
 
 	f.copyLen = n
+	// log.Printf("copyLen: %d", n)
 	f.copyData()
 }
 
@@ -777,21 +791,42 @@ func (f *Decompressor) finishBlock() {
 		}
 		f.err = io.EOF
 	}
-	if f.updates != nil && (woffset-f.last > f.span) {
-		checkpoint := &Checkpoint{
-			Hist:  make([]byte, len(f.dict.hist)),
-			In:    f.roffset,
-			Out:   woffset,
-			B:     f.b,
-			NB:    f.nb,
-			WrPos: f.dict.wrPos,
-			RdPos: f.dict.rdPos,
-			Full:  f.dict.full,
-		}
-		copy(checkpoint.Hist, f.dict.hist)
+	if f.updates != nil {
+		// Who knows if any of this is right?
+		avail := int64(f.dict.availRead())
+		size := (woffset + avail) - f.lastBlock.Out
+		free := size >= 32768 && (f.lastBlock.Out < f.minRef || f.minRef == -1)
+		due := woffset-f.last > f.span
 
-		f.updates <- checkpoint
-		f.last = checkpoint.Out
+		if free && f.lastBlock.Out != 0 {
+			f.last = f.lastBlock.Out
+			lb := f.lastBlock
+			// log.Printf("%+v", lb)
+			// log.Printf("sending free (%d, %d) because %d < %d", lb.In, lb.Out, lb.Out, f.minRef)
+			f.updates <- &lb
+		} else if due {
+			checkpoint := &Checkpoint{
+				Hist:  make([]byte, len(f.dict.hist)),
+				In:    f.roffset,
+				Out:   woffset,
+				B:     f.b,
+				NB:    f.nb,
+				WrPos: f.dict.wrPos,
+				RdPos: f.dict.rdPos,
+				Full:  f.dict.full,
+			}
+			copy(checkpoint.Hist, f.dict.hist)
+
+			f.updates <- checkpoint
+			f.last = checkpoint.Out
+		}
+
+		f.lastBlock = Checkpoint{
+			In:  f.roffset,
+			Out: woffset + int64(f.dict.availRead()),
+			B:   f.b,
+			NB:  f.nb,
+		}
 	}
 	f.step = (*Decompressor).nextBlock
 }
@@ -1041,14 +1076,12 @@ func Continue(r io.Reader, from *Checkpoint, span int64, updates chan<- *Checkpo
 	f.roffset = from.In
 	f.woffset = from.Out
 
+	f.lastBlock.In = from.In
+	f.lastBlock.Out = from.Out
+
 	f.last = from.Out // TODO: This was from.In but I think that was a bug.
 	f.updates = updates
 	f.span = span
 
 	return &f
-}
-
-func (f *Decompressor) ResetTo(from *Checkpoint) (int64, error) {
-	// Like Continue and Reset but we want to keep our high watermark to avoid sending redundant checkpoints.
-	return 0, fmt.Errorf("implement ResetTo")
 }
