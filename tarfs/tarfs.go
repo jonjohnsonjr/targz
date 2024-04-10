@@ -100,12 +100,10 @@ type FS struct {
 }
 
 func (fsys *FS) Readlink(name string) (string, error) {
-	i, ok := fsys.index[name]
-	if !ok {
-		return "", fs.ErrNotExist
+	e, err := fsys.Entry(name)
+	if err != nil {
+		return "", err
 	}
-
-	e := fsys.files[i]
 
 	switch e.Header.Typeflag {
 	case tar.TypeSymlink, tar.TypeLink:
@@ -131,12 +129,10 @@ func (fsys *FS) Open(name string) (fs.File, error) {
 		}, nil
 	}
 
-	i, ok := fsys.index[name]
-	if !ok {
-		return nil, fs.ErrNotExist
+	e, err := fsys.Entry(name)
+	if err != nil {
+		return nil, err
 	}
-
-	e := fsys.files[i]
 
 	f := &File{
 		Entry: e,
@@ -255,6 +251,16 @@ func New(ra io.ReaderAt) (*FS, error) {
 	}
 
 	return fsys, nil
+}
+
+func (fsys *FS) Entry(name string) (*Entry, error) {
+	i, ok := fsys.index[name]
+	if !ok {
+		return nil, fs.ErrNotExist
+	}
+
+	e := fsys.files[i]
+	return e, nil
 }
 
 func (fsys *FS) Encode(w io.Writer) error {

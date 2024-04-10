@@ -66,7 +66,15 @@ func run(args []string) error {
 
 	if len(args) == 1 {
 		return fs.WalkDir(fsys, ".", func(p string, d fs.DirEntry, err error) error {
-			fmt.Println(p)
+			if p == "." {
+				return nil
+			}
+
+			e, err := fsys.Entry(p)
+			if err != nil {
+				return fmt.Errorf("Entry(%q): %w", p, err)
+			}
+			fmt.Printf("%d: %s\n", e.Offset, p)
 			return nil
 		})
 	}
