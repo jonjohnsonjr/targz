@@ -21,7 +21,6 @@ func main() {
 }
 
 func run(args []string) error {
-
 	f, err := os.Open(args[0])
 	if err != nil {
 		return err
