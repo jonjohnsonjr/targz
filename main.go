@@ -74,7 +74,7 @@ func run(args []string) error {
 			if err != nil {
 				return fmt.Errorf("Entry(%q): %w", p, err)
 			}
-			fmt.Printf("%d: %s\n", e.Offset, p)
+			fmt.Printf("%d+%d: %s\n", e.Offset, e.Size(), p)
 			return nil
 		})
 	}
