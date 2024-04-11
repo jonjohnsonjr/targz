@@ -8,11 +8,6 @@ This is primarily a proof of concept of the interfaces and how they compose:
 
 <img src="./doc/viz.svg">
 
-For more mature implementations of similar ideas, see:
-
-* https://github.com/circulosmeos/gztool
-* https://github.com/awslabs/soci-snapshotter
-
 ## Packages
 
 ### gsip
@@ -35,3 +30,11 @@ For more mature implementations of similar ideas, see:
 * Make concurrent tarfs access safe.
 * Allow recycling of flate readers.
 * Implement better checkpointing heuristics.
+
+## See Also
+
+For more mature implementations of similar ideas, see:
+
+* https://github.com/madler/zlib/blob/develop/examples/zran.c
+* https://github.com/circulosmeos/gztool
+* https://github.com/awslabs/soci-snapshotter
