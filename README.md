@@ -14,13 +14,25 @@ This is primarily a proof of concept of the interfaces and how they compose:
 
 `gsip` is very similar to [`compress/gzip`](https://pkg.go.dev/compress/gzip) but for an `io.ReaderAt` instead of an `io.Reader`.
 
+Internally, a `gsip.Reader` maintains a set of 32KB checkpoints that allow it to start decoding from the start of a DEFLATE block.
+It also exposes an `Encode` method for saving those offsets to an `io.Writer`.
+There is a `Decode` function that will restore a `gsip.Reader` by reading those checkpoints from an `io.Reader`.
+
+The exact format of the checkpoints is currently not optimal (at all), but demonstrates the proof of concept.
+
 ### tarfs
 
 `tarfs` implements an [`fs.FS`](https://pkg.go.dev/io/fs#FS) given an `io.ReaderAt` for a tar stream.
 
+Similarly to `gsip.Reader`, `tarfs.FS` maintains an internal Table of Contents of tar metadata, which can be saved and restored with `Encode` and `Decode`.
+
+The exact format of the TOC is currently not optimal (at all), but demonstrates the proof of concept.
+
 ### ranger
 
 `ranger` implements an `io.ReaderAt` using [HTTP range requests](https://developer.mozilla.org/en-US/docs/Web/HTTP/Range_requests).
+
+This needs some work to be more efficient, but demonstrates the proof of concept.
 
 ## TODO
 
