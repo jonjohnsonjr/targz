@@ -17,6 +17,7 @@ package tarfs
 import (
 	"archive/tar"
 	"bufio"
+	"cmp"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -37,7 +38,7 @@ type Entry struct {
 	Offset int64
 
 	Filename string
-	Dir      string
+	dir      string
 	fi       fs.FileInfo
 }
 
@@ -97,6 +98,7 @@ type FS struct {
 	ra    io.ReaderAt
 	files []*Entry
 	index map[string]int
+	dirs  map[string][]fs.DirEntry
 }
 
 func (fsys *FS) Readlink(name string) (string, error) {
@@ -118,7 +120,7 @@ func (fsys *FS) Open(name string) (fs.File, error) {
 	if name == "." {
 		return &File{
 			Entry: &Entry{
-				Dir:      ".",
+				dir:      ".",
 				Filename: ".",
 				Header: tar.Header{
 					Name: ".",
@@ -170,23 +172,12 @@ func (fsys *FS) Stat(name string) (fs.FileInfo, error) {
 }
 
 func (fsys *FS) ReadDir(name string) ([]fs.DirEntry, error) {
-	children := []fs.DirEntry{}
-	for _, f := range fsys.files {
-		// This is load bearing for now.
-		f := f
-
-		if f.Dir != name {
-			continue
-		}
-
-		children = append(children, f)
+	dirs, ok := fsys.dirs[name]
+	if !ok {
+		return []fs.DirEntry{}, nil
 	}
 
-	slices.SortFunc(children, func(a, b fs.DirEntry) int {
-		return strings.Compare(a.Name(), b.Name())
-	})
-
-	return children, nil
+	return dirs, nil
 }
 
 type countReader struct {
@@ -200,35 +191,22 @@ func (cr *countReader) Read(p []byte) (int, error) {
 	return n, err
 }
 
-func New(ra io.ReaderAt) (*FS, error) {
+func New(ra io.ReaderAt, size int64) (*FS, error) {
 	fsys := &FS{
 		ra:    ra,
 		files: []*Entry{},
 		index: map[string]int{},
+		dirs:  map[string][]fs.DirEntry{},
 	}
 
-	var r io.Reader
-	if reader, ok := ra.(io.Reader); ok {
-		r = reader
-	} else {
-		size := int64(-1)
-		if statter, ok := ra.(interface {
-			Stat() (fs.FileInfo, error)
-		}); ok {
-			stat, err := statter.Stat()
-			if err != nil {
-				return nil, err
-			}
-			size = stat.Size()
-		}
-		r = io.NewSectionReader(ra, 0, size)
-	}
+	// Number of entries in a given directory, so we know how large of a slice to allocate.
+	dirCount := map[string]int{}
 
+	r := io.NewSectionReader(ra, 0, size)
 	cr := &countReader{bufio.NewReaderSize(r, 1<<20), 0}
 	tr := tar.NewReader(cr)
 
 	// TODO: Do this lazily.
-	// TODO: Allow this to be saved and restored.
 	for {
 		hdr, err := tr.Next()
 		if errors.Is(err, io.EOF) {
@@ -239,14 +217,34 @@ func New(ra io.ReaderAt) (*FS, error) {
 		}
 
 		normalized := normalize(hdr.Name)
+		dir := path.Dir(normalized)
+
 		fsys.index[normalized] = len(fsys.files)
 
 		fsys.files = append(fsys.files, &Entry{
 			Header:   *hdr,
 			Offset:   cr.n,
 			Filename: normalized,
-			Dir:      path.Dir(normalized),
+			dir:      dir,
 			fi:       hdr.FileInfo(),
+		})
+
+		dirCount[dir]++
+	}
+
+	// Pre-generate the results of ReadDir so we don't allocate a ton if fs.WalkDir calls us.
+	// TODO: Consider doing this lazily in a sync.Once the first time we see a ReadDir.
+	for dir, count := range dirCount {
+		fsys.dirs[dir] = make([]fs.DirEntry, 0, count)
+	}
+
+	for _, f := range fsys.files {
+		fsys.dirs[f.dir] = append(fsys.dirs[f.dir], f)
+	}
+
+	for _, files := range fsys.dirs {
+		slices.SortFunc(files, func(a, b fs.DirEntry) int {
+			return cmp.Compare(a.Name(), b.Name())
 		})
 	}
 

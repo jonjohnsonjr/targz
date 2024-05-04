@@ -33,7 +33,7 @@ func run(args []string) error {
 			return err
 		}
 
-		fsys, err := tarfs.New(zr)
+		fsys, err := tarfs.New(zr, resp.ContentLength)
 		if err != nil {
 			return err
 		}
@@ -59,7 +59,8 @@ func run(args []string) error {
 		return err
 	}
 
-	fsys, err := tarfs.New(zr)
+	// We don't know the size until we decompress it.
+	fsys, err := tarfs.New(zr, 1<<63-1)
 	if err != nil {
 		return err
 	}
