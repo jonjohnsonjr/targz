@@ -202,6 +202,11 @@ func New(ra io.ReaderAt, size int64) (*FS, error) {
 	// Number of entries in a given directory, so we know how large of a slice to allocate.
 	dirCount := map[string]int{}
 
+	// Assume negative size means caller doesn't know. This could be better.
+	if size < 0 {
+		size = 1<<63 - 1
+	}
+
 	r := io.NewSectionReader(ra, 0, size)
 	cr := &countReader{bufio.NewReaderSize(r, 1<<20), 0}
 	tr := tar.NewReader(cr)
