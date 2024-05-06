@@ -51,7 +51,7 @@ func (e Entry) Size() int64 {
 }
 
 func (e Entry) Type() fs.FileMode {
-	return e.fi.Mode()
+	return e.fi.Mode().Type()
 }
 
 func (e Entry) Info() (fs.FileInfo, error) {
@@ -67,6 +67,9 @@ type File struct {
 
 	fsys *FS
 	sr   *io.SectionReader
+
+	// current position in readdir listing
+	cursor int
 }
 
 func (f *File) Stat() (fs.FileInfo, error) {
@@ -89,9 +92,34 @@ func (f *File) Close() error {
 	return nil
 }
 
-// TODO: Respect n.
 func (f *File) ReadDir(n int) ([]fs.DirEntry, error) {
-	return f.fsys.ReadDir(f.Entry.Filename)
+	if n == 0 {
+		return nil, nil
+	}
+
+	dir, err := f.fsys.ReadDir(f.Entry.Filename)
+	if err != nil {
+		return nil, err
+	}
+
+	if f.cursor >= len(dir) {
+		if n < 0 {
+			return nil, nil
+		}
+
+		return nil, io.EOF
+	}
+
+	if n > 0 && len(dir)-f.cursor > n {
+		ret := dir[f.cursor : f.cursor+n]
+		f.cursor += n
+		return ret, nil
+	}
+
+	ret := dir[f.cursor:]
+	f.cursor = len(dir)
+
+	return ret, nil
 }
 
 type FS struct {
@@ -139,8 +167,7 @@ func (fsys *FS) Open(name string) (fs.File, error) {
 	f := &File{
 		Entry: e,
 		fsys:  fsys,
-		// TODO: Use SectionOpener if fsys.ra implements it.
-		sr: io.NewSectionReader(fsys.ra, e.Offset, e.Header.Size),
+		sr:    io.NewSectionReader(fsys.ra, e.Offset, e.Header.Size),
 	}
 
 	return f, nil
@@ -248,6 +275,7 @@ func New(ra io.ReaderAt, size int64) (*FS, error) {
 	}
 
 	for _, files := range fsys.dirs {
+		// TODO: Consider lazily sorting each directory the first time it's accessed.
 		slices.SortFunc(files, func(a, b fs.DirEntry) int {
 			return cmp.Compare(a.Name(), b.Name())
 		})
