@@ -17,6 +17,7 @@ package tarfs
 import (
 	"archive/tar"
 	"bufio"
+	"bytes"
 	"cmp"
 	"encoding/json"
 	"errors"
@@ -156,6 +157,7 @@ func (fsys *FS) Open(name string) (fs.File, error) {
 				fi: root{},
 			},
 			fsys: fsys,
+			sr:   io.NewSectionReader(bytes.NewReader(nil), 0, 0),
 		}, nil
 	}
 
