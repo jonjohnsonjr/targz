@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"sync"
 
 	"github.com/jonjohnsonjr/targz/gsip/internal/flate"
 	"github.com/jonjohnsonjr/targz/gsip/internal/gzip"
@@ -21,7 +22,10 @@ type Reader struct {
 	size        int64
 	updates     chan *flate.Checkpoint
 	checkpoints []*flate.Checkpoint
-	readers     []*gzip.Reader
+
+	// Reader, available.
+	mu      sync.Mutex
+	readers map[*gzip.Reader]bool
 }
 
 func (r *Reader) Encode(w io.Writer) error {
@@ -42,7 +46,7 @@ func Decode(ra io.ReaderAt, size int64, index io.Reader) (*Reader, error) {
 		ra:          ra,
 		size:        size,
 		checkpoints: idx.Checkpoints,
-		readers:     []*gzip.Reader{},
+		readers:     map[*gzip.Reader]bool{},
 	}, nil
 }
 
@@ -69,7 +73,7 @@ func NewReader(ra io.ReaderAt, size int64) (*Reader, error) {
 		size:        size,
 		updates:     updates,
 		checkpoints: []*flate.Checkpoint{},
-		readers:     []*gzip.Reader{zr},
+		readers:     map[*gzip.Reader]bool{zr: true},
 	}
 
 	// TODO: Locking around this to make sure it's safe.
@@ -83,15 +87,21 @@ func NewReader(ra io.ReaderAt, size int64) (*Reader, error) {
 	return r, nil
 }
 
-func (r *Reader) findReader(off int64) (io.Reader, error) {
+func (r *Reader) acquireReader(off int64) (*gzip.Reader, error) {
+	r.mu.Lock()
+
 	// TODO: Appropriate locking around this for concurrency.
 	// TODO: Even if we don't find an exact match, one of these might be reusable.
 	// TODO: Consider a fixed size pool of these that signal they're done via Close().
-	for _, zr := range r.readers {
-		if zr.Offset() == off {
+	for zr, ok := range r.readers {
+		if ok && zr.Offset() == off {
+			r.readers[zr] = false
+			r.mu.Unlock()
 			return zr, nil
 		}
 	}
+
+	r.mu.Unlock()
 
 	var highest *flate.Checkpoint
 	for _, checkpoint := range r.checkpoints {
@@ -103,11 +113,35 @@ func (r *Reader) findReader(off int64) (io.Reader, error) {
 	}
 
 	if highest == nil {
-		return nil, fmt.Errorf("no checkpoints available, is this a real gzip archive?")
+		// No checkpoints probably means we are trying to ReadAt before we index.
+		// Just try to find any reader that isn't already in use (probably the first one).
+		r.mu.Lock()
+
+		for zr, ok := range r.readers {
+			if !ok {
+				continue
+			}
+
+			if zr.Offset() > off {
+				continue
+			}
+
+			r.readers[zr] = false
+			r.mu.Unlock()
+
+			if _, err := io.CopyN(io.Discard, zr, off-zr.Offset()); err != nil {
+				return nil, err
+			}
+
+			return zr, nil
+		}
+
+		r.mu.Unlock()
+		return nil, fmt.Errorf("could not find any checkpoints or readers for offset %d", off)
 	}
 
 	// TODO: Do we need to bound the size?
-	sr := io.NewSectionReader(r.ra, highest.In, r.size-highest.In)
+	sr := io.NewSectionReader(r.ra, highest.In, r.size)
 
 	zr, err := gzip.Continue(sr, 0, highest, nil)
 	if err != nil {
@@ -120,16 +154,29 @@ func (r *Reader) findReader(off int64) (io.Reader, error) {
 		return nil, err
 	}
 
-	r.readers = append(r.readers, zr)
+	r.mu.Lock()
+	r.readers[zr] = false
+	r.mu.Unlock()
 
 	return zr, nil
 }
 
 func (r *Reader) ReadAt(p []byte, off int64) (int, error) {
-	zr, err := r.findReader(off)
+	zr, err := r.acquireReader(off)
 	if err != nil {
 		return 0, err
 	}
 
+	defer func() {
+		r.mu.Lock()
+		defer r.mu.Unlock()
+
+		r.readers[zr] = true
+	}()
+
 	return io.ReadFull(zr, p)
+}
+
+type reader struct {
+	gzip.Reader
 }
