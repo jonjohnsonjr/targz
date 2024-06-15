@@ -329,5 +329,7 @@ type TOC struct {
 }
 
 func normalize(s string) string {
-	return strings.TrimPrefix(strings.TrimSuffix(s, "/"), "./")
+	// Trim prefix of "/" and prefix of "./"
+	// Trim suffix of "/"
+	return strings.TrimPrefix(strings.TrimPrefix(strings.TrimSuffix(s, "/"), "/"), "./")
 }
