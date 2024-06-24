@@ -144,6 +144,40 @@ func (fsys *FS) Readlink(name string) (string, error) {
 	return "", fmt.Errorf("Readlink(%q): file is not a link", name)
 }
 
+// arbitrary number stolen from filepath.EvalSymlinks
+// this seems to be 40 in linux (MAXSYMLINKS), which might be more reasonable
+const maxHops = 255
+
+// open follows symlinks up to [maxHops] times.
+func (fsys *FS) open(name string, hops int) (fs.File, error) {
+	if hops > maxHops {
+		return nil, fmt.Errorf("opening %s: chased too many (%d) symlinks", name, maxHops)
+	}
+
+	e, err := fsys.Entry(name)
+	if err != nil {
+		return nil, err
+	}
+
+	switch e.Header.Typeflag {
+	case tar.TypeSymlink, tar.TypeLink:
+		link := e.Header.Linkname
+		if path.IsAbs(link) {
+			return fsys.open(link, hops+1)
+		}
+
+		return fsys.open(path.Join(e.dir, link), hops+1)
+	}
+
+	f := &File{
+		Entry: e,
+		fsys:  fsys,
+		sr:    io.NewSectionReader(fsys.ra, e.Offset, e.Header.Size),
+	}
+
+	return f, nil
+}
+
 // Open implements fs.FS.
 func (fsys *FS) Open(name string) (fs.File, error) {
 	if name == "." {
@@ -161,18 +195,7 @@ func (fsys *FS) Open(name string) (fs.File, error) {
 		}, nil
 	}
 
-	e, err := fsys.Entry(name)
-	if err != nil {
-		return nil, err
-	}
-
-	f := &File{
-		Entry: e,
-		fsys:  fsys,
-		sr:    io.NewSectionReader(fsys.ra, e.Offset, e.Header.Size),
-	}
-
-	return f, nil
+	return fsys.open(name, 0)
 }
 
 type root struct{}
