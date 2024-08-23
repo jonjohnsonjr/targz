@@ -1,5 +1,7 @@
 # targz
 
+[![GoDoc](https://godoc.org/github.com/jonjohnsonjr/targz?status.svg)](https://pkg.go.dev/github.com/jonjohnsonjr/targz)
+
 This module is a collection of packages relating to gzipped tarballs.
 
 Taken together, they allow for fast random access of a filesystem within a gzipped tarball.
