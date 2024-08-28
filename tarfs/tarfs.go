@@ -356,3 +356,38 @@ func normalize(s string) string {
 	// Trim suffix of "/"
 	return strings.TrimPrefix(strings.TrimPrefix(strings.TrimSuffix(s, "/"), "/"), "./")
 }
+
+// Index returns a list of tar entries with their offsets.
+//
+// This is primarily useful if you don't have an io.ReaderAt implementation handy but still
+// want to know the offsets, for example if you're using something like:
+// https://pkg.go.dev/cloud.google.com/go/storage#ObjectHandle.NewRangeReader
+func Index(r io.Reader) ([]*Entry, error) {
+	var files []*Entry
+
+	cr := &countReader{bufio.NewReaderSize(r, 1<<20), 0}
+	tr := tar.NewReader(cr)
+
+	for {
+		hdr, err := tr.Next()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			return nil, err
+		}
+
+		normalized := normalize(hdr.Name)
+		dir := path.Dir(normalized)
+
+		files = append(files, &Entry{
+			Header:   *hdr,
+			Offset:   cr.n,
+			Filename: normalized,
+			dir:      dir,
+			fi:       hdr.FileInfo(),
+		})
+	}
+
+	return files, nil
+}
