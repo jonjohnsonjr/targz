@@ -24,6 +24,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"iter"
 	"path"
 	"strings"
 	"testing/iotest"
@@ -144,6 +145,18 @@ func (fsys *FS) Readlink(name string) (string, error) {
 	return "", fmt.Errorf("Readlink(%q): file is not a link", name)
 }
 
+func dirs(name string) iter.Seq[string] {
+	return func(yield func(string) bool) {
+		for i, v := range name {
+			if v == '/' {
+				if !yield(name[0:i]) {
+					return
+				}
+			}
+		}
+	}
+}
+
 // arbitrary number stolen from filepath.EvalSymlinks
 // this seems to be 40 in linux (MAXSYMLINKS), which might be more reasonable
 const maxHops = 255
@@ -156,14 +169,38 @@ func (fsys *FS) open(name string, hops int) (fs.File, error) {
 
 	e, err := fsys.Entry(name)
 	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			// Deal with symlinked dirs.
+			for dir := range dirs(name) {
+				e, err := fsys.Entry(dir)
+				if err != nil {
+					continue
+				}
+
+				if e.Header.Typeflag != tar.TypeSymlink {
+					continue
+				}
+
+				// We need to rewrite what comes after the symlinked dir.
+				rest := strings.TrimPrefix(name, dir)
+
+				link := e.Header.Linkname
+				if path.IsAbs(link) {
+					return fsys.open(normalize(path.Join(link, rest)), hops+1)
+				}
+
+				return fsys.open(path.Join(e.dir, link, rest), hops+1)
+			}
+		}
+
 		return nil, err
 	}
 
 	switch e.Header.Typeflag {
 	case tar.TypeSymlink, tar.TypeLink:
 		link := e.Header.Linkname
-		if path.IsAbs(link) {
-			return fsys.open(link, hops+1)
+		if path.IsAbs(link) || e.Header.Typeflag == tar.TypeLink {
+			return fsys.open(normalize(link), hops+1)
 		}
 
 		return fsys.open(path.Join(e.dir, link), hops+1)
