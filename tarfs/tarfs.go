@@ -129,9 +129,28 @@ type FS struct {
 	files []*Entry
 	index map[string]int
 	dirs  map[string][]fs.DirEntry
+
+	// Contains real or synthesized entry for "."
+	root *Entry
 }
 
-func (fsys *FS) Readlink(name string) (string, error) {
+func (fsys *FS) Lstat(name string) (fs.FileInfo, error) {
+	if i, ok := fsys.index[name]; ok {
+		if f := fsys.files[i]; f != nil {
+			return f.fi, nil
+		}
+	}
+
+	// fs.WalkDir expects "." to return a root entry to bootstrap the walk.
+	// If we didn't find it above, synthesize one.
+	if name == "." {
+		return fsys.root.Info()
+	}
+
+	return nil, fs.ErrNotExist
+}
+
+func (fsys *FS) ReadLink(name string) (string, error) {
 	e, err := fsys.Entry(name)
 	if err != nil {
 		return "", err
@@ -143,6 +162,11 @@ func (fsys *FS) Readlink(name string) (string, error) {
 	}
 
 	return "", fmt.Errorf("Readlink(%q): file is not a link", name)
+}
+
+// Readlink is kept for backwards compatibility for code written prior to fs.ReadLinkFS.
+func (fsys *FS) Readlink(name string) (string, error) {
+	return fsys.ReadLink(name)
 }
 
 func dirs(name string) iter.Seq[string] {
@@ -185,6 +209,7 @@ func (fsys *FS) open(name string, hops int) (fs.File, error) {
 				rest := strings.TrimPrefix(name, dir)
 
 				link := e.Header.Linkname
+
 				if path.IsAbs(link) {
 					return fsys.open(normalize(path.Join(link, rest)), hops+1)
 				}
@@ -219,16 +244,9 @@ func (fsys *FS) open(name string, hops int) (fs.File, error) {
 func (fsys *FS) Open(name string) (fs.File, error) {
 	if name == "." {
 		return &File{
-			Entry: &Entry{
-				dir:      ".",
-				Filename: ".",
-				Header: tar.Header{
-					Name: ".",
-				},
-				fi: root{},
-			},
-			fsys: fsys,
-			sr:   io.NewSectionReader(bytes.NewReader(nil), 0, 0),
+			Entry: fsys.root,
+			fsys:  fsys,
+			sr:    io.NewSectionReader(bytes.NewReader(nil), 0, 0),
 		}, nil
 	}
 
@@ -245,19 +263,11 @@ func (r root) IsDir() bool        { return true }
 func (r root) Sys() any           { return nil }
 
 func (fsys *FS) Stat(name string) (fs.FileInfo, error) {
-	if i, ok := fsys.index[name]; ok {
-		if f := fsys.files[i]; f != nil {
-			return f.fi, nil
-		}
+	f, err := fsys.Open(name)
+	if err != nil {
+		return nil, err
 	}
-
-	// fs.WalkDir expects "." to return a root entry to bootstrap the walk.
-	// If we didn't find it above, synthesize one.
-	if name == "." {
-		return root{}, nil
-	}
-
-	return nil, fs.ErrNotExist
+	return f.Stat()
 }
 
 func (fsys *FS) ReadDir(name string) ([]fs.DirEntry, error) {
@@ -286,6 +296,14 @@ func New(ra io.ReaderAt, size int64) (*FS, error) {
 		files: []*Entry{},
 		index: map[string]int{},
 		dirs:  map[string][]fs.DirEntry{},
+		root: &Entry{
+			dir:      ".",
+			Filename: ".",
+			Header: tar.Header{
+				Name: ".",
+			},
+			fi: root{},
+		},
 	}
 
 	// Number of entries in a given directory, so we know how large of a slice to allocate.
@@ -313,15 +331,27 @@ func New(ra io.ReaderAt, size int64) (*FS, error) {
 		normalized := normalize(hdr.Name)
 		dir := path.Dir(normalized)
 
+		// If the tar contains a "." entry, we don't want ReadDir() to return itself.
+		if normalized == "." && dir == "." {
+			dir = ""
+		}
+
 		fsys.index[normalized] = len(fsys.files)
 
-		fsys.files = append(fsys.files, &Entry{
+		entry := &Entry{
 			Header:   *hdr,
 			Offset:   cr.n,
 			Filename: normalized,
 			dir:      dir,
 			fi:       hdr.FileInfo(),
-		})
+		}
+
+		fsys.files = append(fsys.files, entry)
+
+		// If this is the root entry, stash it for later.
+		if dir == "" {
+			fsys.root = entry
+		}
 
 		dirCount[dir]++
 	}
