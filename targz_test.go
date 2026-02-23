@@ -1,7 +1,9 @@
 package main
 
 import (
+	"archive/tar"
 	"bytes"
+	"compress/gzip"
 	"context"
 	"io"
 	"io/fs"
@@ -9,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"testing"
+	"testing/fstest"
 
 	"github.com/jonjohnsonjr/targz/gsip"
 	"github.com/jonjohnsonjr/targz/ranger"
@@ -84,6 +87,38 @@ func TestTargz(t *testing.T) {
 
 		return nil
 	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// https://github.com/jonjohnsonjr/targz/issues/2
+func TestNoTarTrailer(t *testing.T) {
+	buf := &bytes.Buffer{}
+	gz := gzip.NewWriter(buf)
+	tw := tar.NewWriter(gz)
+	if err := tw.WriteHeader(&tar.Header{Name: "hi jon"}); err != nil {
+		t.Fatal(err)
+	}
+	// Note: Flush() but not Close().
+	if err := tw.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	if err := gz.Close(); err != nil {
+		t.Fatal(err)
+	}
+	targz := bytes.NewReader(buf.Bytes())
+
+	sippy, err := gsip.NewReader(targz, targz.Size())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	fs, err := tarfs.New(sippy, -1)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := fstest.TestFS(fs, "hi jon"); err != nil {
 		t.Fatal(err)
 	}
 }

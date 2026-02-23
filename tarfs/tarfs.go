@@ -315,16 +315,16 @@ func New(ra io.ReaderAt, size int64) (*FS, error) {
 	}
 
 	r := io.NewSectionReader(ra, 0, size)
-	cr := &countReader{bufio.NewReaderSize(r, 1<<20), 0}
+	cr := &countReader{r, 0}
 	tr := tar.NewReader(cr)
 
 	// TODO: Do this lazily.
 	for {
 		hdr, err := tr.Next()
-		if errors.Is(err, io.EOF) {
-			break
-		}
 		if err != nil {
+			if errors.Is(err, io.EOF) {
+				break
+			}
 			return nil, err
 		}
 

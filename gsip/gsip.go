@@ -65,7 +65,7 @@ func NewReader(ra io.ReaderAt, size int64) (*Reader, error) {
 
 	zr, err := gzip.NewReader(br, updates)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("gzip.NewReader: %w", err)
 	}
 
 	r := &Reader{
@@ -129,8 +129,9 @@ func (r *Reader) acquireReader(off int64) (*gzip.Reader, error) {
 			r.readers[zr] = false
 			r.mu.Unlock()
 
-			if _, err := io.CopyN(io.Discard, zr, off-zr.Offset()); err != nil {
-				return nil, err
+			discard := off - zr.Offset()
+			if _, err := io.CopyN(io.Discard, zr, discard); err != nil {
+				return nil, fmt.Errorf("discarding %d bytes: %w", discard, err)
 			}
 
 			return zr, nil
@@ -151,7 +152,7 @@ func (r *Reader) acquireReader(off int64) (*gzip.Reader, error) {
 	// TODO: Make sure this doesn't send a bunch of tiny ReadAts.
 	discard := off - highest.Out
 	if _, err := io.CopyN(io.Discard, zr, discard); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("discarding %d bytes: %w", discard, err)
 	}
 
 	r.mu.Lock()
@@ -164,7 +165,7 @@ func (r *Reader) acquireReader(off int64) (*gzip.Reader, error) {
 func (r *Reader) ReadAt(p []byte, off int64) (int, error) {
 	zr, err := r.acquireReader(off)
 	if err != nil {
-		return 0, err
+		return 0, fmt.Errorf("acquireReader at %d: %w", off, err)
 	}
 
 	defer func() {
@@ -174,7 +175,12 @@ func (r *Reader) ReadAt(p []byte, off int64) (int, error) {
 		r.readers[zr] = true
 	}()
 
-	return io.ReadFull(zr, p)
+	n, err := io.ReadFull(zr, p)
+	if err != nil {
+		return 0, fmt.Errorf("ReadFull at %d: %w", off, err)
+	}
+
+	return n, nil
 }
 
 type reader struct {
