@@ -177,7 +177,14 @@ func (r *Reader) ReadAt(p []byte, off int64) (int, error) {
 
 	n, err := io.ReadFull(zr, p)
 	if err != nil {
-		return 0, fmt.Errorf("ReadFull at %d: %w", off, err)
+		// io.ReaderAt contract: a short read at end-of-stream must return
+		// the partial bytes plus io.EOF, not (0, io.ErrUnexpectedEOF). The
+		// latter loses data and breaks callers that wrap the Reader in
+		// io.SectionReader / bufio.Reader (e.g. tarfs.Index).
+		if err == io.ErrUnexpectedEOF || err == io.EOF {
+			return n, io.EOF
+		}
+		return n, fmt.Errorf("ReadFull at %d: %w", off, err)
 	}
 
 	return n, nil
