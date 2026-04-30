@@ -141,8 +141,12 @@ func (r *Reader) acquireReader(off int64) (*gzip.Reader, error) {
 		return nil, fmt.Errorf("could not find any checkpoints or readers for offset %d", off)
 	}
 
-	// TODO: Do we need to bound the size?
-	sr := io.NewSectionReader(r.ra, highest.In, r.size)
+	// SectionReader's third arg is length, not absolute end. Passing
+	// r.size let downstream reads ask the underlying ReaderAt for bytes
+	// in [highest.In, highest.In + r.size) — i.e. up to r.size past the
+	// blob's end when highest.In > 0. Real Range-capable transports
+	// reject those requests with 416.
+	sr := io.NewSectionReader(r.ra, highest.In, r.size-highest.In)
 
 	zr, err := gzip.Continue(sr, 0, highest, nil)
 	if err != nil {

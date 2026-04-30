@@ -3,6 +3,7 @@ package gsip
 import (
 	"bytes"
 	"compress/gzip"
+	"fmt"
 	"io"
 	"math/rand/v2"
 	"os"
@@ -86,5 +87,77 @@ func TestReadAtShortReadAtEOF(t *testing.T) {
 	}
 	if string(p[:n]) != want {
 		t.Errorf("got %q, want %q", p[:n], want)
+	}
+}
+
+// strictReaderAt is an io.ReaderAt that errors loudly if asked to read
+// past the size of its underlying buffer. Real-world Range-capable
+// transports (e.g. registry blob endpoints) return 416 in that case.
+type strictReaderAt struct {
+	data []byte
+	t    *testing.T
+}
+
+func (s *strictReaderAt) ReadAt(p []byte, off int64) (int, error) {
+	if off < 0 || off+int64(len(p)) > int64(len(s.data)) {
+		err := fmt.Errorf("ReadAt past end of stream: off=%d len=%d size=%d", off, len(p), len(s.data))
+		s.t.Error(err)
+		return 0, err
+	}
+	return copy(p, s.data[off:off+int64(len(p))]), nil
+}
+
+// TestAcquireReaderRespectsBlobBounds asserts that ReadAt via the
+// checkpoint path (acquireReader's "no exact-match reader, find highest
+// checkpoint <= off" branch) doesn't ask the underlying reader for bytes
+// past the blob's end. The internal SectionReader's third arg is a
+// length, not an absolute end — passing total size as the length lets
+// downstream reads spill past the blob.
+func TestAcquireReaderRespectsBlobBounds(t *testing.T) {
+	// Enough plaintext to ensure multiple flate-block checkpoints.
+	plaintext := bytes.Repeat([]byte("Lorem ipsum dolor sit amet, consectetur adipiscing elit. "), 50000)
+	var buf bytes.Buffer
+	gw := gzip.NewWriter(&buf)
+	if _, err := gw.Write(plaintext); err != nil {
+		t.Fatal(err)
+	}
+	if err := gw.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	sra := &strictReaderAt{data: buf.Bytes(), t: t}
+	r, err := NewReader(sra, int64(buf.Len()))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Sequentially drain the stream so the frontier reader emits all
+	// flate-block checkpoints.
+	chunk := make([]byte, 1<<16)
+	for off := int64(0); off < int64(len(plaintext)); {
+		n, err := r.ReadAt(chunk, off)
+		if err != nil && err != io.EOF {
+			t.Fatalf("sequential drain at %d: %v", off, err)
+		}
+		off += int64(n)
+		if n == 0 {
+			break
+		}
+	}
+
+	// Now ReadAt at an offset the frontier reader has already passed.
+	// acquireReader must take the checkpoint path and must not request
+	// bytes past the blob's end.
+	target := make([]byte, 64)
+	targetOff := int64(len(plaintext) - 200)
+	n, err := r.ReadAt(target, targetOff)
+	if err != nil && err != io.EOF {
+		t.Fatalf("checkpoint ReadAt: %v", err)
+	}
+	if n != len(target) {
+		t.Errorf("n = %d, want %d", n, len(target))
+	}
+	if !bytes.Equal(target[:n], plaintext[targetOff:targetOff+int64(n)]) {
+		t.Errorf("content mismatch at offset %d", targetOff)
 	}
 }
