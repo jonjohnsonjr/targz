@@ -23,9 +23,10 @@ type Reader struct {
 	updates     chan *flate.Checkpoint
 	checkpoints []*flate.Checkpoint
 
-	// Reader, available.
-	mu      sync.Mutex
-	readers map[*gzip.Reader]bool
+	mu            sync.Mutex
+	readers       map[*gzip.Reader]bool
+	closeOnce     sync.Once
+	goroutineDone chan struct{} // closed when the checkpoint goroutine exits; nil for Decode-path readers
 }
 
 func (r *Reader) Encode(w io.Writer) error {
@@ -76,11 +77,13 @@ func NewReader(ra io.ReaderAt, size int64) (*Reader, error) {
 		readers:     map[*gzip.Reader]bool{zr: true},
 	}
 
-	// TODO: Locking around this to make sure it's safe.
-	// TODO: Make sure we don't leak this goroutine.
+	r.goroutineDone = make(chan struct{})
 	go func() {
+		defer close(r.goroutineDone)
 		for checkpoint := range updates {
+			r.mu.Lock()
 			r.checkpoints = append(r.checkpoints, checkpoint)
+			r.mu.Unlock()
 		}
 	}()
 
@@ -103,14 +106,15 @@ func (r *Reader) acquireReader(off int64) (*gzip.Reader, error) {
 
 	r.mu.Unlock()
 
+	r.mu.Lock()
 	var highest *flate.Checkpoint
 	for _, checkpoint := range r.checkpoints {
 		if checkpoint.Out > off {
 			break
 		}
-
 		highest = checkpoint
 	}
+	r.mu.Unlock()
 
 	if highest == nil {
 		// No checkpoints probably means we are trying to ReadAt before we index.
@@ -192,6 +196,15 @@ func (r *Reader) ReadAt(p []byte, off int64) (int, error) {
 	}
 
 	return n, nil
+}
+
+// Wait blocks until the checkpoint goroutine has fully drained all checkpoints from the scan.  The entire compressed stream must have been read to EOF before calling Wait -- if the frontier reader is still in use, the updates channel is still open and closing it will panic.  Wait is a no-op on readers created by [Decode], which have no goroutine.
+func (r *Reader) Wait() {
+	if r.goroutineDone == nil {
+		return
+	}
+	r.closeOnce.Do(func() { close(r.updates) })
+	<-r.goroutineDone
 }
 
 type reader struct {
