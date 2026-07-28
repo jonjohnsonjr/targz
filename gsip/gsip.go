@@ -148,12 +148,17 @@ func (r *Reader) acquireReader(off int64) (*gzip.Reader, error) {
 	// reject those requests with 416.
 	sr := io.NewSectionReader(r.ra, highest.In, r.size-highest.In)
 
-	zr, err := gzip.Continue(sr, 0, highest, nil)
+	// use the same 1 MiB read-ahead as the frontier reader in NewReader;
+	// without this the internal gzip reader falls back to bufio's default
+	// 4 KiB buffer, which causes ~256× more ReadAt calls on the underlying
+	// ReaderAt for large blobs
+	br := bufio.NewReaderSize(sr, 1<<20)
+
+	zr, err := gzip.Continue(br, 0, highest, nil)
 	if err != nil {
 		return nil, fmt.Errorf("continue: %w", err)
 	}
 
-	// TODO: Make sure this doesn't send a bunch of tiny ReadAts.
 	discard := off - highest.Out
 	if _, err := io.CopyN(io.Discard, zr, discard); err != nil {
 		return nil, fmt.Errorf("discarding %d bytes: %w", discard, err)
