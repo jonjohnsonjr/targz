@@ -404,11 +404,42 @@ func Decode(ra io.ReaderAt, r io.Reader) (*FS, error) {
 		ra:    ra,
 		files: toc.Entries,
 		index: make(map[string]int, len(toc.Entries)),
+		// synthetic root; overridden below if the tar contained an explicit "." entry
+		root: &Entry{
+			dir:      ".",
+			Filename: ".",
+			Header:   tar.Header{Name: "."},
+			fi:       root{},
+		},
 	}
 
+	// dir is unexported and therefore not serialized in TOC; recompute from
+	// Filename using the same normalization rule as New
+	dirCount := make(map[string]int, len(fsys.files))
 	for i, e := range fsys.files {
 		e.fi = e.Header.FileInfo()
+		e.dir = path.Dir(e.Filename)
+		if e.Filename == "." && e.dir == "." {
+			e.dir = ""
+		}
 		fsys.index[e.Filename] = i
+		dirCount[e.dir]++
+		if e.dir == "" {
+			fsys.root = e
+		}
+	}
+
+	fsys.dirs = make(map[string][]fs.DirEntry, len(dirCount))
+	for dir, count := range dirCount {
+		fsys.dirs[dir] = make([]fs.DirEntry, 0, count)
+	}
+	for _, e := range fsys.files {
+		fsys.dirs[e.dir] = append(fsys.dirs[e.dir], e)
+	}
+	for _, files := range fsys.dirs {
+		slices.SortFunc(files, func(a, b fs.DirEntry) int {
+			return cmp.Compare(a.Name(), b.Name())
+		})
 	}
 
 	return fsys, nil
