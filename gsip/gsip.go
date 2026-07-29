@@ -90,6 +90,36 @@ func NewReader(ra io.ReaderAt, size int64) (*Reader, error) {
 	return r, nil
 }
 
+// newReaderWithSpan is like [NewReader] but lets callers control the minimum
+// number of decompressed bytes between checkpoints.  Used in tests to force
+// multiple checkpoints over small inputs without reading megabytes of data.
+func newReaderWithSpan(ra io.ReaderAt, size, span int64) (*Reader, error) {
+	updates := make(chan *flate.Checkpoint, 10)
+	sr := io.NewSectionReader(ra, 0, size)
+	br := bufio.NewReaderSize(sr, 1<<20)
+	zr, err := gzip.NewReaderWithSpans(br, span, updates)
+	if err != nil {
+		return nil, fmt.Errorf("gzip.NewReaderWithSpans: %w", err)
+	}
+	r := &Reader{
+		ra:          ra,
+		size:        size,
+		updates:     updates,
+		checkpoints: []*flate.Checkpoint{},
+		readers:     map[*gzip.Reader]bool{zr: true},
+	}
+	r.goroutineDone = make(chan struct{})
+	go func() {
+		defer close(r.goroutineDone)
+		for checkpoint := range updates {
+			r.mu.Lock()
+			r.checkpoints = append(r.checkpoints, checkpoint)
+			r.mu.Unlock()
+		}
+	}()
+	return r, nil
+}
+
 func (r *Reader) acquireReader(off int64) (*gzip.Reader, error) {
 	r.mu.Lock()
 
@@ -210,6 +240,73 @@ func (r *Reader) Wait() {
 	}
 	r.closeOnce.Do(func() { close(r.updates) })
 	<-r.goroutineDone
+}
+
+// linearTail extracts the minimum ring-buffer bytes needed to resume
+// decompression from cp: all pending bytes [RdPos, WrPos) that will be
+// served before new decompression, plus maxDist lookback bytes immediately
+// before RdPos for satisfying back-references.  Returns a flat chronological
+// slice starting at (RdPos − lookback) in ring order.
+// Returns nil when nothing needs storing (pending == 0 and maxDist == 0).
+func linearTail(cp *flate.Checkpoint, maxDist int) []byte {
+	hist := cp.History()
+	wrPos := cp.WrPos
+	rdPos := cp.RdPos
+	pending := wrPos - rdPos
+
+	// available lookback before rdPos (served history in the ring)
+	avail := rdPos
+	if cp.Full {
+		// full ring: served history = total ring − pending bytes
+		avail = len(hist) - pending
+	}
+	lookback := maxDist
+	if lookback > avail {
+		lookback = avail
+	}
+
+	total := lookback + pending
+	if total == 0 {
+		return nil
+	}
+
+	tail := make([]byte, total)
+	start := (rdPos - lookback + len(hist)) % len(hist)
+	if start < wrPos {
+		copy(tail, hist[start:wrPos])
+	} else {
+		// tail spans the ring wrap: [start, len(hist)) then [0, wrPos)
+		first := copy(tail, hist[start:])
+		copy(tail[first:], hist[:wrPos])
+	}
+	return tail
+}
+
+// Prune trims each checkpoint's stored history window to the minimum bytes
+// needed to resume decompression: pending ring bytes (served before any new
+// decompression) plus the MaxDist lookback for back-references.  Call after
+// [Reader.Wait] and before [Reader.Encode].
+//
+// Prune is a no-op on readers created by [Decode] and on checkpoints where
+// no savings are possible (or that have already been pruned).
+func (r *Reader) Prune() {
+	if r.goroutineDone == nil {
+		return // Decode path: MaxDist was never computed during a scan.
+	}
+	r.mu.Lock()
+	checkpoints := make([]*flate.Checkpoint, len(r.checkpoints))
+	copy(checkpoints, r.checkpoints)
+	r.mu.Unlock()
+
+	for _, cp := range checkpoints {
+		if cp.IsEmpty() || len(cp.History()) != 1<<15 {
+			continue // empty sentinel or already pruned
+		}
+		tail := linearTail(cp, cp.MaxDist)
+		if tail != nil && len(tail) < len(cp.History()) {
+			cp.SetHistory(tail)
+		}
+	}
 }
 
 type reader struct {

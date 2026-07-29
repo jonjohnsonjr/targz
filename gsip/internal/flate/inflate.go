@@ -386,6 +386,9 @@ type Decompressor struct {
 	span    int64
 	last    int64
 	updates chan<- *Checkpoint
+
+	segmentMaxDist    int         // max back-ref distance since the last checkpoint
+	pendingCheckpoint *Checkpoint // last emitted checkpoint, awaiting MaxDist finalization
 }
 
 func (f *Decompressor) nextBlock() {
@@ -688,6 +691,9 @@ readLiteral:
 		}
 
 		f.copyLen, f.copyDist = length, dist
+		if dist > f.segmentMaxDist {
+			f.segmentMaxDist = dist
+		}
 		goto copyHistory
 	}
 
@@ -778,6 +784,12 @@ func (f *Decompressor) finishBlock() {
 		f.err = io.EOF
 	}
 	if f.updates != nil && (woffset-f.last > f.span) {
+		if f.pendingCheckpoint != nil {
+			f.pendingCheckpoint.MaxDist = f.segmentMaxDist
+			f.pendingCheckpoint = nil
+		}
+		f.segmentMaxDist = 0 // always reset; tracks distances since the new checkpoint
+
 		checkpoint := &Checkpoint{
 			Hist:  make([]byte, len(f.dict.hist)),
 			In:    f.roffset,
@@ -792,6 +804,14 @@ func (f *Decompressor) finishBlock() {
 
 		f.updates <- checkpoint
 		f.last = checkpoint.Out
+
+		if !f.final {
+			f.pendingCheckpoint = checkpoint
+		}
+	} else if f.final && f.pendingCheckpoint != nil {
+		// EOF without a new checkpoint: finalize the last segment.
+		f.pendingCheckpoint.MaxDist = f.segmentMaxDist
+		f.pendingCheckpoint = nil
 	}
 	f.step = (*Decompressor).nextBlock
 }
@@ -981,6 +1001,11 @@ type Checkpoint struct {
 
 	// Optional gzip header.
 	GzipHeader *Header `json:"header,omitempty"`
+
+	// MaxDist is the maximum back-reference distance seen in the deflate
+	// segment that follows this checkpoint. Set during the initial scan;
+	// used by Prune to trim Hist. Not serialized.
+	MaxDist int `json:"-"`
 }
 
 func (c *Checkpoint) History() []byte {
@@ -1031,7 +1056,28 @@ func Continue(r io.Reader, from *Checkpoint, span int64, updates chan<- *Checkpo
 
 	f.dict = dictDecoder{}
 	f.dict.hist = make([]byte, maxMatchOffset)
-	copy(f.dict.hist, from.Hist)
+	if len(from.Hist) == maxMatchOffset {
+		copy(f.dict.hist, from.Hist)
+	} else {
+		// linear tail format: Hist holds a chronological slice of the ring
+		// from (RdPos − lookback) to WrPos, where lookback = len(Hist) −
+		// pending and pending = WrPos − RdPos.  Place the slice back at
+		// the same ring positions so pending bytes and back-references both
+		// resolve correctly.
+		tail := from.Hist
+		if L := len(tail); L > 0 {
+			pending := from.WrPos - from.RdPos
+			lookback := L - pending
+			start := (from.RdPos - lookback + maxMatchOffset) % maxMatchOffset
+			if start < from.WrPos {
+				copy(f.dict.hist[start:from.WrPos], tail)
+			} else {
+				n := maxMatchOffset - start
+				copy(f.dict.hist[start:], tail[:n])
+				copy(f.dict.hist[:from.WrPos], tail[n:])
+			}
+		}
+	}
 	f.dict.wrPos = from.WrPos
 	f.dict.rdPos = from.RdPos
 	f.dict.full = from.Full
