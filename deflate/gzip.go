@@ -19,7 +19,7 @@ const (
 // member's CRC32 and uncompressed size.
 func ParseGzip(data []byte) (*Trace, error) {
 	r := newBitReader(data)
-	t := &Trace{}
+	t := &Trace{input: append([]byte(nil), data...)}
 	p := parser{r: r, trace: t}
 
 	for r.remaining() != 0 {

@@ -1,0 +1,199 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>DEFLATE debugger</title>
+  <style>
+    :root { color-scheme: dark; --bg:#0b0f14; --panel:#111821; --line:#263241; --muted:#8190a5; --text:#dce6f2; --blue:#63b3ff; --orange:#ffb86c; --green:#76db9b; --red:#ff7085; }
+    * { box-sizing:border-box }
+    body { margin:0; background:var(--bg); color:var(--text); font:13px ui-monospace,SFMono-Regular,Menlo,monospace }
+    header { display:flex; align-items:center; gap:18px; padding:13px 18px; border-bottom:1px solid var(--line); background:#0d141c; position:sticky; top:0; z-index:3 }
+    h1 { font:600 15px system-ui,sans-serif; margin:0 }
+    #summary { color:var(--muted) }
+    main { display:grid; grid-template-columns:270px minmax(500px,1fr) 390px; min-height:calc(100vh - 48px) }
+    aside, section { min-width:0; border-right:1px solid var(--line) }
+    .pane-title { padding:10px 12px; color:var(--muted); text-transform:uppercase; letter-spacing:.08em; border-bottom:1px solid var(--line) }
+    #blocks { padding:8px }
+    button, input { font:inherit; color:inherit; background:#17212d; border:1px solid #314257; border-radius:4px; padding:6px 8px }
+    button { cursor:pointer }
+    button:hover, button.active { border-color:var(--blue); background:#182b3d }
+    .block { width:100%; text-align:left; margin-bottom:6px; line-height:1.5 }
+    .block small { display:block; color:var(--muted) }
+    table { border-collapse:collapse; width:100% }
+    th { position:sticky; top:48px; background:#101720; color:var(--muted); text-align:left; font-weight:500; border-bottom:1px solid var(--line); padding:8px }
+    td { padding:7px 8px; border-bottom:1px solid #18222e; white-space:nowrap }
+    tr:hover { background:#121f2c; cursor:pointer }
+    .literal { color:var(--green) } .match { color:var(--orange) } .stored { color:var(--blue) }
+    #right { border-right:0; overflow:auto }
+    .card { margin:10px; padding:11px; border:1px solid var(--line); border-radius:6px; background:var(--panel) }
+    .card h2 { margin:0 0 9px; font:600 13px system-ui,sans-serif }
+    .kv { display:grid; grid-template-columns:115px 1fr; gap:5px 9px }
+    .kv div:nth-child(odd) { color:var(--muted) }
+    .toolbar { display:flex; gap:6px; align-items:center; margin:10px }
+    .toolbar input { min-width:0; width:130px }
+    .origin-step { border-left:3px solid var(--orange); padding:7px 9px; margin:7px 0; background:#141d27 }
+    .origin-step:last-child { border-color:var(--green) }
+    #output { word-break:break-all; line-height:2.15 }
+    .byte { display:inline-block; min-width:21px; text-align:center; border-radius:3px; cursor:pointer; color:#a9bed4 }
+    .byte:hover, .byte.selected { background:#24415e; color:white }
+    .range { height:8px; background:#1a2633; border-radius:4px; overflow:hidden; margin-top:7px }
+    .range > div { height:100%; background:linear-gradient(90deg,var(--blue),var(--orange)) }
+    #error { color:var(--red); padding:10px; white-space:pre-wrap }
+    @media(max-width:1000px) { main { grid-template-columns:220px 1fr } #right { grid-column:1/-1; border-top:1px solid var(--line) } }
+  </style>
+</head>
+<body>
+<header><h1>DEFLATE debugger</h1><div id="summary">loading trace…</div></header>
+<main>
+  <aside><div class="pane-title">Blocks</div><div id="blocks"></div></aside>
+  <section>
+    <div class="pane-title">Instruction trace</div>
+    <table><thead><tr><th>op</th><th>output</th><th>compressed bits</th><th>instruction</th></tr></thead><tbody id="ops"></tbody></table>
+  </section>
+  <aside id="right">
+    <div class="pane-title">Provenance</div>
+    <div class="toolbar"><input id="offset" type="number" min="0" value="0"><button id="trace">Trace byte</button></div>
+    <div id="error"></div>
+    <div class="card"><h2>Output neighborhood</h2><div id="output"></div></div>
+    <div class="card"><h2>Selected instruction</h2><div id="detail" class="kv">Select an instruction.</div></div>
+    <div class="card"><h2>Origin chain</h2><div id="origin">Select an output byte.</div></div>
+    <div class="card"><h2>Later uses of origin byte</h2><div id="uses">Select an output byte.</div></div>
+  </aside>
+</main>
+<script>
+const $ = id => document.getElementById(id);
+let summary, selectedOffset = 0;
+const fmt = n => Number(n).toLocaleString();
+const span = r => `${r.start}–${r.end} (${r.bits}b)`;
+const outspan = r => `[${fmt(r.start)}:${fmt(r.end)})`;
+const printable = b => b >= 32 && b <= 126 ? `'${String.fromCharCode(b).replaceAll("'", "\\'")}'` : `0x${b.toString(16).padStart(2,'0')}`;
+
+async function api(path) {
+  const response = await fetch(path);
+  const value = await response.json();
+  if (!response.ok) throw new Error(value.error || response.statusText);
+  return value;
+}
+
+async function init() {
+  try {
+    summary = await api('/api/summary');
+    $('summary').textContent = `${fmt(summary.outputSize)} output bytes · ${fmt(summary.operationCount)} operations · ${summary.blocks.length} blocks · ${summary.memberCount} gzip members`;
+    renderBlocks();
+    if (summary.blocks.length) selectBlock(summary.blocks[0]);
+    await traceOffset(0);
+  } catch (e) { showError(e); }
+}
+
+function renderBlocks() {
+  $('blocks').replaceChildren(...summary.blocks.map(block => {
+    const button = document.createElement('button');
+    button.className = 'block';
+    button.innerHTML = `<b>${block.id}: ${block.kind}${block.final ? ' · final' : ''}</b><small>out ${outspan(block.output)}</small><small>bits ${block.input.start}–${block.input.end}</small><div class="range"><div style="width:${100 * (block.output.end-block.output.start)/summary.outputSize}%"></div></div>`;
+    button.onclick = () => selectBlock(block, button);
+    return button;
+  }));
+}
+
+async function selectBlock(block, button) {
+  document.querySelectorAll('.block').forEach(x => x.classList.remove('active'));
+  if (button) button.classList.add('active');
+  try {
+    const page = await api(`/api/ops?start=${block.firstOp}&limit=${Math.min(block.numOps, 1000)}`);
+    renderOps(page.ops);
+  } catch (e) { showError(e); }
+}
+
+function renderOps(ops) {
+  $('ops').replaceChildren(...ops.map(op => {
+    const tr = document.createElement('tr');
+    let instruction;
+    if (op.kind === 'literal') instruction = `${printable(op.literal)}`;
+    else if (op.kind === 'match') instruction = `len=${op.length} dist=${op.distance} seed=${outspan(op.seed)}`;
+    else instruction = `len=${op.length}`;
+    tr.innerHTML = `<td>%${op.id}</td><td>${outspan(op.output)}</td><td>${op.input.start}–${op.input.end}</td><td class="${op.kind}">${op.kind} ${instruction}</td>`;
+    tr.onclick = () => selectOp(op);
+    return tr;
+  }));
+}
+
+async function selectOp(op) {
+  const rows = [
+    ['operation', `%${op.id} / block ${op.blockId}`],
+    ['kind', op.kind],
+    ['output', outspan(op.output)],
+    ['input', span(op.input)],
+    ['symbol', span(op.symbolBits)],
+    ['symbol bits', op.symbolCode || '—'],
+  ];
+  if (op.kind === 'literal') rows.push(['value', printable(op.literal)]);
+  if (op.kind === 'match') {
+    rows.push(['length', op.length], ['distance', op.distance], ['seed', outspan(op.seed)],
+      ['length extra', `${span(op.lengthExtraBits)} ${op.lengthExtraCode}`],
+      ['distance code', `${span(op.distanceBits)} ${op.distanceCode}`],
+      ['distance extra', `${span(op.distanceExtraBits)} ${op.distanceExtraCode}`],
+      ['full encoding', op.inputBits]);
+  }
+  $('detail').replaceChildren(...rows.flatMap(([k,v]) => {
+    const a=document.createElement('div'), b=document.createElement('div'); a.textContent=k; b.textContent=v; return [a,b];
+  }));
+  $('offset').value = op.output.start;
+  await traceOffset(op.output.start);
+}
+
+async function traceOffset(offset) {
+  selectedOffset = Number(offset);
+  $('offset').value = selectedOffset;
+  $('error').textContent = '';
+  try {
+    const [origin, neighborhood] = await Promise.all([
+      api(`/api/origin?offset=${selectedOffset}`),
+      api(`/api/output?start=${Math.max(0,selectedOffset-32)}&length=96`)
+    ]);
+    renderOutput(neighborhood);
+    renderOrigin(origin);
+    const last = origin.steps[origin.steps.length-1];
+    const uses = await api(`/api/uses?start=${last.output}&end=${last.output+1}`);
+    renderUses(uses);
+  } catch (e) { showError(e); }
+}
+
+function renderOutput(value) {
+  const bytes=[];
+  for(let i=0;i<value.hex.length;i+=2) bytes.push(parseInt(value.hex.slice(i,i+2),16));
+  $('output').replaceChildren(...bytes.map((b,i) => {
+    const p=value.start+i, node=document.createElement('span');
+    node.className='byte'+(p===selectedOffset?' selected':'');
+    node.title=`out[${p}] = 0x${b.toString(16).padStart(2,'0')}`;
+    node.textContent=b>=32&&b<=126?String.fromCharCode(b):'·';
+    node.onclick=()=>traceOffset(p); return node;
+  }));
+}
+
+function renderOrigin(value) {
+  $('origin').replaceChildren(...value.steps.map((step,i) => {
+    const div=document.createElement('div'); div.className='origin-step';
+    if(step.op.kind==='match') div.textContent=`out[${step.output}] ← %${step.op.id} match (${step.op.length}, ${step.op.distance}) → seed out[${step.seedSource}]`;
+    else if(step.op.kind==='literal') div.textContent=`out[${step.output}] ← %${step.op.id} literal ${printable(step.op.literal)} from bits ${step.op.input.start}–${step.op.input.end}`;
+    else div.textContent=`out[${step.output}] ← %${step.op.id} stored byte at bits ${step.storedInput.start}–${step.storedInput.end}`;
+    div.onclick=()=>selectOp(step.op); return div;
+  }));
+}
+
+function renderUses(value) {
+  if (!value.uses.length) { $('uses').textContent='No later match uses this origin byte directly.'; return; }
+  $('uses').replaceChildren(...value.uses.slice(0,100).map(use => {
+    const div=document.createElement('div'); div.className='origin-step';
+    div.textContent=`%${use.op.id} → ${outspan(use.op.output)}, seed ${outspan(use.seed)}, up to ${use.repeats} repeats`;
+    div.onclick=()=>selectOp(use.op); return div;
+  }));
+}
+
+function showError(e) { $('error').textContent = e.message || String(e); }
+$('trace').onclick = () => traceOffset(Number($('offset').value));
+$('offset').onkeydown = e => { if(e.key==='Enter') traceOffset(Number(e.target.value)); };
+init();
+</script>
+</body>
+</html>

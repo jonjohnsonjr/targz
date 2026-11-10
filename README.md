@@ -12,6 +12,31 @@ This is primarily a proof of concept of the interfaces and how they compose:
 
 ## Packages
 
+### deflate debugger
+
+`deflate` is an experimental, bit-exact DEFLATE trace engine. Unlike a normal
+decompressor, its primary output is a queryable instruction stream: every
+literal, stored run, and match records both its compressed-bit span and its
+uncompressed output range. Match provenance can be followed through
+overlapping back-references to the literal or stored byte which originated a
+value.
+
+Print a trace and follow one output byte back to its origin:
+
+```console
+go run ./cmd/deflate-debug -origin 100 archive.tar.gz
+```
+
+Or launch the interactive debugger:
+
+```console
+go run ./cmd/deflate-debug-web archive.tar.gz
+```
+
+The web debugger provides block navigation, a paged instruction trace,
+clickable output bytes, normalized match seeds, origin chains, and reverse-use
+queries. It binds to a random localhost port by default.
+
 ### gsip
 
 `gsip` is very similar to [`compress/gzip`](https://pkg.go.dev/compress/gzip) but for an `io.ReaderAt` instead of an `io.Reader`.

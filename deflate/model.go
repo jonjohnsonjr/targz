@@ -6,7 +6,10 @@
 // range it produces.
 package deflate
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 // BitPos is an absolute bit offset in the compressed source. DEFLATE consumes
 // bits least-significant bit first within each byte, so bit 0 is the low bit of
@@ -173,12 +176,34 @@ type Trace struct {
 	Members []Member
 	Output  []byte
 
+	input    []byte
 	consumed BitPos
 }
 
 // ConsumedBits reports the logical end of the parsed raw DEFLATE stream. For
 // gzip input, it reports the end of the final member including its trailer.
 func (t *Trace) ConsumedBits() BitPos { return t.consumed }
+
+// BitString returns source bits in logical consumption order. The leftmost
+// character is the first bit consumed, independent of how bits are packed into
+// source bytes.
+func (t *Trace) BitString(r BitRange) (string, error) {
+	if r.End < r.Start || uint64(r.End) > uint64(len(t.input))*8 {
+		return "", fmt.Errorf("compressed bit range [%s,%s) is outside input", r.Start, r.End)
+	}
+	var b strings.Builder
+	b.Grow(int(r.Len()))
+	for pos := r.Start; pos < r.End; pos++ {
+		bytePos := uint64(pos) >> 3
+		bitPos := uint64(pos) & 7
+		if t.input[bytePos]&(1<<bitPos) != 0 {
+			b.WriteByte('1')
+		} else {
+			b.WriteByte('0')
+		}
+	}
+	return b.String(), nil
+}
 
 // ParseError identifies the logical compressed bit where parsing failed.
 type ParseError struct {

@@ -65,7 +65,7 @@ var codeOrder = [...]int{16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 
 // not an error; ConsumedBits identifies the exact end of the stream.
 func ParseRaw(data []byte) (*Trace, error) {
 	r := newBitReader(data)
-	t := &Trace{}
+	t := &Trace{input: append([]byte(nil), data...)}
 	p := parser{r: r, trace: t}
 	if err := p.blocks(0); err != nil {
 		return nil, err

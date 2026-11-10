@@ -188,6 +188,20 @@ func TestStoredByteOrigin(t *testing.T) {
 	}
 }
 
+func TestBitStringUsesConsumptionOrder(t *testing.T) {
+	trace, err := ParseRaw([]byte{0x01, 0x00, 0x00, 0xff, 0xff})
+	if err != nil {
+		t.Fatal(err)
+	}
+	bits, err := trace.BitString(BitRange{Start: 0, End: 8})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bits != "10000000" {
+		t.Fatalf("bits = %q, want logical LSB-first order", bits)
+	}
+}
+
 func assertTraceInvariants(t testing.TB, trace *Trace) {
 	t.Helper()
 	var output OutPos
