@@ -71,6 +71,7 @@ func ParseRaw(data []byte) (*Trace, error) {
 		return nil, err
 	}
 	t.consumed = r.position()
+	t.buildIndexes()
 	return t, nil
 }
 
@@ -282,6 +283,9 @@ func (p *parser) dynamicTables() (lit, dist, code *decoderTable, err error) {
 	code, err = buildTable(codeLengths)
 	if err != nil {
 		return nil, nil, nil, p.fail(start, "building code-length table: %v", err)
+	}
+	if code.max == 0 {
+		return nil, nil, nil, p.fail(start, "empty code-length table")
 	}
 
 	lengths := make([]uint8, 0, nlit+ndist)

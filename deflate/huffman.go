@@ -12,13 +12,24 @@ type decoderTable struct {
 
 func buildTable(lengths []uint8) (*decoderTable, error) {
 	var count [maxCodeBits + 1]int
+	symbols := 0
+	maxBits := 0
 	for _, n := range lengths {
 		if n > maxCodeBits {
 			return nil, fmt.Errorf("invalid Huffman code length %d", n)
 		}
 		if n != 0 {
 			count[n]++
+			symbols++
+			if int(n) > maxBits {
+				maxBits = int(n)
+			}
 		}
+	}
+	if symbols == 0 {
+		// RFC 1951 permits an empty distance tree when a dynamic block has
+		// no match instructions. Attempting to decode from it still fails.
+		return &decoderTable{}, nil
 	}
 
 	left := 1
@@ -28,6 +39,9 @@ func buildTable(lengths []uint8) (*decoderTable, error) {
 		if left < 0 {
 			return nil, fmt.Errorf("oversubscribed Huffman tree")
 		}
+	}
+	if left != 0 && !(symbols == 1 && maxBits == 1) {
+		return nil, fmt.Errorf("incomplete Huffman tree")
 	}
 
 	var next [maxCodeBits + 1]uint16
@@ -56,9 +70,6 @@ func buildTable(lengths []uint8) (*decoderTable, error) {
 			Code:   c,
 			Bits:   n,
 		})
-	}
-	if len(t.public.Codes) == 0 {
-		return nil, fmt.Errorf("empty Huffman tree")
 	}
 	return t, nil
 }

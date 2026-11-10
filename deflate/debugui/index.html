@@ -14,6 +14,9 @@
     main { display:grid; grid-template-columns:270px minmax(500px,1fr) 390px; min-height:calc(100vh - 48px) }
     aside, section { min-width:0; border-right:1px solid var(--line) }
     .pane-title { padding:10px 12px; color:var(--muted); text-transform:uppercase; letter-spacing:.08em; border-bottom:1px solid var(--line) }
+    .trace-head { display:flex; align-items:center; justify-content:space-between; padding:5px 8px 5px 12px }
+    .pager { display:flex; align-items:center; gap:5px; text-transform:none; letter-spacing:0 }
+    .pager button { padding:3px 7px }
     #blocks { padding:8px }
     button, input { font:inherit; color:inherit; background:#17212d; border:1px solid #314257; border-radius:4px; padding:6px 8px }
     button { cursor:pointer }
@@ -48,7 +51,7 @@
 <main>
   <aside><div class="pane-title">Blocks</div><div id="blocks"></div></aside>
   <section>
-    <div class="pane-title">Instruction trace</div>
+    <div class="pane-title trace-head"><span>Instruction trace</span><span class="pager"><button id="prev">←</button><span id="page"></span><button id="next">→</button></span></div>
     <table><thead><tr><th>op</th><th>output</th><th>compressed bits</th><th>instruction</th></tr></thead><tbody id="ops"></tbody></table>
   </section>
   <aside id="right">
@@ -63,7 +66,8 @@
 </main>
 <script>
 const $ = id => document.getElementById(id);
-let summary, selectedOffset = 0;
+let summary, selectedOffset = 0, currentBlock, pageStart = 0;
+const pageSize = 500;
 const fmt = n => Number(n).toLocaleString();
 const span = r => `${r.start}–${r.end} (${r.bits}b)`;
 const outspan = r => `[${fmt(r.start)}:${fmt(r.end)})`;
@@ -99,9 +103,20 @@ function renderBlocks() {
 async function selectBlock(block, button) {
   document.querySelectorAll('.block').forEach(x => x.classList.remove('active'));
   if (button) button.classList.add('active');
+  currentBlock = block;
+  await loadPage(block.firstOp);
+}
+
+async function loadPage(start) {
+  if (!currentBlock) return;
+  pageStart = Math.max(currentBlock.firstOp, Math.min(start, currentBlock.firstOp + Math.max(0,currentBlock.numOps-1)));
   try {
-    const page = await api(`/api/ops?start=${block.firstOp}&limit=${Math.min(block.numOps, 1000)}`);
+    const count = Math.min(pageSize, currentBlock.firstOp + currentBlock.numOps - pageStart);
+    const page = await api(`/api/ops?start=${pageStart}&limit=${count}`);
     renderOps(page.ops);
+    $('page').textContent = `${fmt(pageStart-currentBlock.firstOp+1)}–${fmt(pageStart-currentBlock.firstOp+page.ops.length)} / ${fmt(currentBlock.numOps)}`;
+    $('prev').disabled = pageStart <= currentBlock.firstOp;
+    $('next').disabled = pageStart + page.ops.length >= currentBlock.firstOp + currentBlock.numOps;
   } catch (e) { showError(e); }
 }
 
@@ -174,7 +189,7 @@ function renderOutput(value) {
 function renderOrigin(value) {
   $('origin').replaceChildren(...value.steps.map((step,i) => {
     const div=document.createElement('div'); div.className='origin-step';
-    if(step.op.kind==='match') div.textContent=`out[${step.output}] ← %${step.op.id} match (${step.op.length}, ${step.op.distance}) → seed out[${step.seedSource}]`;
+    if(step.op.kind==='match') div.textContent=`out[${step.output}] ← %${step.op.id} match (${step.op.length}, ${step.op.distance}) → direct out[${step.directSource}], normalized seed out[${step.seedSource}]`;
     else if(step.op.kind==='literal') div.textContent=`out[${step.output}] ← %${step.op.id} literal ${printable(step.op.literal)} from bits ${step.op.input.start}–${step.op.input.end}`;
     else div.textContent=`out[${step.output}] ← %${step.op.id} stored byte at bits ${step.storedInput.start}–${step.storedInput.end}`;
     div.onclick=()=>selectOp(step.op); return div;
@@ -193,6 +208,8 @@ function renderUses(value) {
 function showError(e) { $('error').textContent = e.message || String(e); }
 $('trace').onclick = () => traceOffset(Number($('offset').value));
 $('offset').onkeydown = e => { if(e.key==='Enter') traceOffset(Number(e.target.value)); };
+$('prev').onclick = () => loadPage(pageStart-pageSize);
+$('next').onclick = () => loadPage(pageStart+pageSize);
 init();
 </script>
 </body>

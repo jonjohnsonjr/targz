@@ -202,6 +202,33 @@ func TestBitStringUsesConsumptionOrder(t *testing.T) {
 	}
 }
 
+func TestReverseUseIndexMatchesNaiveScan(t *testing.T) {
+	input := bytes.Repeat([]byte("abracadabra banana bandana\n"), 200)
+	trace, err := ParseRaw(rawDeflate(t, input, flate.BestCompression))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for start := OutPos(0); start < OutPos(len(input)); start += 37 {
+		query := OutRange{Start: start, End: minOut(start+19, OutPos(len(input)))}
+		got := trace.Uses(query)
+		var want []int
+		for _, op := range trace.Ops {
+			seed, ok := op.Seed()
+			if ok && maxOut(seed.Start, query.Start) < minOut(seed.End, query.End) {
+				want = append(want, op.ID)
+			}
+		}
+		if len(got) != len(want) {
+			t.Fatalf("Uses(%v) returned %d matches, want %d", query, len(got), len(want))
+		}
+		for i := range want {
+			if got[i].Op.ID != want[i] {
+				t.Fatalf("Uses(%v)[%d] = op %d, want op %d", query, i, got[i].Op.ID, want[i])
+			}
+		}
+	}
+}
+
 func assertTraceInvariants(t testing.TB, trace *Trace) {
 	t.Helper()
 	var output OutPos

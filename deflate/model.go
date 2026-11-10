@@ -178,6 +178,8 @@ type Trace struct {
 
 	input    []byte
 	consumed BitPos
+	uses     []useIndexEntry
+	useMax   []OutPos
 }
 
 // ConsumedBits reports the logical end of the parsed raw DEFLATE stream. For

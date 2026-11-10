@@ -107,6 +107,7 @@ func ParseGzip(data []byte) (*Trace, error) {
 	}
 
 	t.consumed = r.position()
+	t.buildIndexes()
 	return t, nil
 }
 

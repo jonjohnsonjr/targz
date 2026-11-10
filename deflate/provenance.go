@@ -79,6 +79,35 @@ type Use struct {
 	Repeats      int
 }
 
+type useIndexEntry struct {
+	seed OutRange
+	op   int
+}
+
+func (t *Trace) buildIndexes() {
+	t.uses = t.uses[:0]
+	for _, op := range t.Ops {
+		seed, ok := op.Seed()
+		if ok {
+			t.uses = append(t.uses, useIndexEntry{seed: seed, op: op.ID})
+		}
+	}
+	sort.Slice(t.uses, func(i, j int) bool {
+		if t.uses[i].seed.Start == t.uses[j].seed.Start {
+			return t.uses[i].seed.End < t.uses[j].seed.End
+		}
+		return t.uses[i].seed.Start < t.uses[j].seed.Start
+	})
+	t.useMax = make([]OutPos, len(t.uses))
+	var high OutPos
+	for i, entry := range t.uses {
+		if entry.seed.End > high {
+			high = entry.seed.End
+		}
+		t.useMax[i] = high
+	}
+}
+
 // Uses finds match instructions which consume bytes from the selected output
 // range. Results describe normalized seed dependencies rather than expanding
 // overlapping copies into one edge per output byte.
@@ -87,16 +116,24 @@ func (t *Trace) Uses(query OutRange) []Use {
 	if query.End <= query.Start {
 		return uses
 	}
-	for _, op := range t.Ops {
-		seed, ok := op.Seed()
-		if !ok {
-			continue
+	// Entries are ordered by seed start. Walk backward from the final start
+	// before query.End, stopping once the prefix maximum proves no earlier
+	// interval can overlap the query.
+	i := sort.Search(len(t.uses), func(i int) bool {
+		return t.uses[i].seed.Start >= query.End
+	})
+	for i--; i >= 0; i-- {
+		if t.useMax[i] <= query.Start {
+			break
 		}
+		entry := t.uses[i]
+		seed := entry.seed
 		start := maxOut(query.Start, seed.Start)
 		end := minOut(query.End, seed.End)
 		if start >= end {
 			continue
 		}
+		op := t.Ops[entry.op]
 		repeats := op.Length / op.Distance
 		if op.Length%op.Distance != 0 {
 			repeats++
@@ -108,6 +145,7 @@ func (t *Trace) Uses(query OutRange) []Use {
 			Repeats:      repeats,
 		})
 	}
+	sort.Slice(uses, func(i, j int) bool { return uses[i].Op.ID < uses[j].Op.ID })
 	return uses
 }
 
