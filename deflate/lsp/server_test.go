@@ -1,16 +1,102 @@
 package lsp
 
 import (
+	"archive/tar"
 	"bytes"
 	"compress/gzip"
 	"encoding/json"
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/jonjohnsonjr/targz/deflate"
 )
+
+func TestAutoViewDetectsTarAndExposesEntries(t *testing.T) {
+	source := filepath.Join(t.TempDir(), "archive.tar.gz")
+	var tarBytes bytes.Buffer
+	tw := tar.NewWriter(&tarBytes)
+	contents := []byte("hello from inside tar\n")
+	if err := tw.WriteHeader(&tar.Header{
+		Name: "docs/readme.txt", Mode: 0o644, Size: int64(len(contents)),
+		ModTime: time.Date(2026, time.November, 11, 12, 0, 0, 0, time.UTC),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tw.Write(contents); err != nil {
+		t.Fatal(err)
+	}
+	if err := tw.WriteHeader(&tar.Header{Name: "latest", Typeflag: tar.TypeSymlink, Linkname: "docs/readme.txt", Mode: 0o777}); err != nil {
+		t.Fatal(err)
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	var compressed bytes.Buffer
+	zw := gzip.NewWriter(&compressed)
+	if _, err := zw.Write(tarBytes.Bytes()); err != nil {
+		t.Fatal(err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(source, compressed.Bytes(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	listing, err := DisassembleFile(source, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(listing, []byte(`"view":"tar"`)) || !bytes.Contains(listing, []byte("docs/readme.txt")) || !bytes.Contains(listing, []byte("latest → docs/readme.txt")) {
+		t.Fatalf("auto tar listing:\n%s", listing)
+	}
+	traceListing, err := DisassembleFileView(source, false, "trace")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(traceListing, []byte("%0")) || bytes.Contains(traceListing, []byte(`"view":"tar"`)) {
+		t.Fatalf("forced trace listing:\n%s", traceListing[:min(len(traceListing), 500)])
+	}
+
+	const uri = "file:///archive.tar.gz"
+	s := NewServer(bytes.NewReader(nil), &bytes.Buffer{})
+	s.docs[uri] = openDocument(uri, string(listing))
+	doc := s.docs[uri]
+	if doc.loadErr != nil {
+		t.Fatal(doc.loadErr)
+	}
+	entry := doc.tar[tarEntryFirstLine]
+	if entry.Name != "docs/readme.txt" || entry.Data.Start != 512 || entry.Data.End != 512+deflate.OutPos(len(contents)) {
+		t.Fatalf("first tar entry = %#v", entry)
+	}
+
+	params, _ := json.Marshal(map[string]any{
+		"textDocument": map[string]any{"uri": uri},
+		"position":     map[string]any{"line": tarEntryFirstLine, "character": 3},
+	})
+	result, err := s.handle("textDocument/hover", params)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hover := result.(map[string]any)["contents"].(map[string]any)["value"].(string)
+	if !strings.Contains(hover, "tar file") || !strings.Contains(hover, "DEFLATE provenance") {
+		t.Fatalf("tar hover = %q", hover)
+	}
+
+	symbolParams, _ := json.Marshal(map[string]any{"textDocument": map[string]any{"uri": uri}})
+	result, err = s.handle("textDocument/documentSymbol", symbolParams)
+	if err != nil {
+		t.Fatal(err)
+	}
+	symbols := result.([]documentSymbol)
+	if len(symbols) != 2 || symbols[0].Name != "docs/readme.txt" || symbols[1].Name != "latest" {
+		t.Fatalf("tar document symbols = %#v", symbols)
+	}
+}
 
 func TestCallHierarchyFollowsDeflateDependencies(t *testing.T) {
 	source := filepath.Join(t.TempDir(), "repetition.gz")

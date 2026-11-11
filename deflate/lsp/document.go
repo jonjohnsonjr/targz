@@ -22,6 +22,7 @@ const headerPrefix = "# gzpls "
 type metadata struct {
 	Source string `json:"source"`
 	Raw    bool   `json:"raw"`
+	View   string `json:"view,omitempty"`
 }
 
 type document struct {
@@ -33,6 +34,7 @@ type document struct {
 	opLine  map[int]int
 	lineLen map[int]int
 	tokens  map[int]opTokens
+	tar     map[int]tarEntry
 	loadErr error
 }
 
@@ -45,6 +47,12 @@ type opTokens struct {
 // DisassembleFile parses source and renders the stable, one-operation-per-line
 // document consumed by the language server.
 func DisassembleFile(source string, raw bool) ([]byte, error) {
+	return DisassembleFileView(source, raw, "auto")
+}
+
+// DisassembleFileView renders auto, trace, or tar. Auto selects tar only when
+// the complete decoded output passes archive/tar checksum validation.
+func DisassembleFileView(source string, raw bool, view string) ([]byte, error) {
 	abs, err := filepath.Abs(source)
 	if err != nil {
 		return nil, err
@@ -57,14 +65,37 @@ func DisassembleFile(source string, raw bool) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	return Disassemble(abs, raw, trace)
+	return disassembleView(abs, raw, trace, view)
 }
 
 // Disassemble renders trace as a gzpls source document.
 func Disassemble(source string, raw bool, trace *deflate.Trace) ([]byte, error) {
-	meta, err := json.Marshal(metadata{Source: source, Raw: raw})
+	return disassembleView(source, raw, trace, "auto")
+}
+
+func disassembleView(source string, raw bool, trace *deflate.Trace, requested string) ([]byte, error) {
+	entries, isTar := parseTarView(trace.Output)
+	view := requested
+	if view == "auto" {
+		if isTar {
+			view = "tar"
+		} else {
+			view = "trace"
+		}
+	}
+	if view != "trace" && view != "tar" {
+		return nil, fmt.Errorf("unknown view %q (want auto, trace, or tar)", requested)
+	}
+	if view == "tar" && !isTar {
+		return nil, fmt.Errorf("decoded output is not a tar archive")
+	}
+	metaValue := metadata{Source: source, Raw: raw, View: view}
+	meta, err := json.Marshal(metaValue)
 	if err != nil {
 		return nil, err
+	}
+	if view == "tar" {
+		return renderTarView(meta, trace, entries), nil
 	}
 	var out bytes.Buffer
 	fmt.Fprintf(&out, "%s%s\n", headerPrefix, meta)
@@ -90,7 +121,7 @@ func Disassemble(source string, raw bool, trace *deflate.Trace) ([]byte, error) 
 func openDocument(uri, text string) *document {
 	doc := &document{
 		uri: uri, lineOp: make(map[int]int), opLine: make(map[int]int),
-		lineLen: make(map[int]int), tokens: make(map[int]opTokens),
+		lineLen: make(map[int]int), tokens: make(map[int]opTokens), tar: make(map[int]tarEntry),
 	}
 	scanner := bufio.NewScanner(strings.NewReader(text))
 	line := 0
@@ -136,6 +167,17 @@ func openDocument(uri, text string) *document {
 		return doc
 	}
 	doc.trace, doc.loadErr = parse(data, doc.meta.Raw)
+	if doc.loadErr == nil && doc.meta.View == "tar" {
+		entries, ok := parseTarView(doc.trace.Output)
+		if !ok {
+			doc.loadErr = fmt.Errorf("document requests tar view but decoded output is not tar")
+			return doc
+		}
+		for i := range entries {
+			entries[i].Line = tarEntryFirstLine + i
+			doc.tar[entries[i].Line] = entries[i]
+		}
+	}
 	return doc
 }
 

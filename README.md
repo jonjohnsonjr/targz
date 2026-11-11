@@ -82,6 +82,22 @@ also maps the editor's most important navigation commands onto provenance:
 
 Raw streams can be generated with `disassemble -raw`.
 
+The default `auto` view recognizes decoded tar streams by parsing their headers
+and checksums rather than trusting the filename. Tarballs open as a compact
+archive manifest with type, mode, exact size, modification time, decoded data
+range, path, link target, hover metadata, and document-outline symbols. Use
+`disassemble -view trace` to force the instruction listing, or `-view tar` to
+require a valid tar archive.
+
+When opening `.tar.gz` directly in Neovim, disable its built-in gzip and tar
+read handlers before registering the `gzpls` `BufReadCmd`:
+
+```lua
+vim.g.loaded_gzip = 1
+vim.g.loaded_tar = 1
+vim.g.loaded_tarPlugin = 1
+```
+
 The call hierarchy deliberately stays compact for overlapping copies. Instead
 of constructing a thousand-node chain for `match len=1000 dist=1`, the match
 has one outgoing edge to its one-byte seed and reports the repetition count in

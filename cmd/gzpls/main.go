@@ -13,7 +13,7 @@ import (
 func main() {
 	flag.Usage = func() {
 		fmt.Fprintln(os.Stderr, "usage:")
-		fmt.Fprintln(os.Stderr, "  gzpls disassemble [-raw] FILE")
+		fmt.Fprintln(os.Stderr, "  gzpls disassemble [-raw] [-view auto|trace|tar] FILE")
 		fmt.Fprintln(os.Stderr, "  gzpls serve")
 	}
 	flag.Parse()
@@ -30,6 +30,7 @@ func main() {
 	case "disassemble":
 		fs := flag.NewFlagSet("disassemble", flag.ExitOnError)
 		raw := fs.Bool("raw", false, "parse raw DEFLATE instead of detecting gzip")
+		view := fs.String("view", "auto", "render auto, trace, or tar view")
 		if err := fs.Parse(flag.Args()[1:]); err != nil {
 			fatal(err)
 		}
@@ -37,7 +38,7 @@ func main() {
 			flag.Usage()
 			os.Exit(2)
 		}
-		listing, err := deflatelsp.DisassembleFile(fs.Arg(0), *raw)
+		listing, err := deflatelsp.DisassembleFileView(fs.Arg(0), *raw, *view)
 		if err != nil {
 			fatal(err)
 		}

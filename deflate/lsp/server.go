@@ -88,6 +88,7 @@ func (s *Server) handle(method string, raw json.RawMessage) (any, error) {
 				"textDocumentSync":       1,
 				"callHierarchyProvider":  true,
 				"definitionProvider":     true,
+				"documentSymbolProvider": true,
 				"hoverProvider":          true,
 				"implementationProvider": true,
 				"referencesProvider":     true,
@@ -127,6 +128,23 @@ func (s *Server) handle(method string, raw json.RawMessage) (any, error) {
 		}
 		delete(s.docs, params.TextDocument.URI)
 		return nil, nil
+	case "textDocument/documentSymbol":
+		var params struct {
+			TextDocument struct {
+				URI string `json:"uri"`
+			} `json:"textDocument"`
+		}
+		if err := json.Unmarshal(raw, &params); err != nil {
+			return nil, err
+		}
+		doc, ok := s.docs[params.TextDocument.URI]
+		if !ok {
+			return nil, fmt.Errorf("document is not open: %s", params.TextDocument.URI)
+		}
+		if doc.loadErr != nil {
+			return nil, doc.loadErr
+		}
+		return doc.documentSymbols(), nil
 	case "textDocument/prepareCallHierarchy":
 		doc, op, err := s.operationAt(raw)
 		if err != nil || op == nil {
@@ -181,7 +199,11 @@ func (s *Server) handle(method string, raw json.RawMessage) (any, error) {
 		if err != nil {
 			return nil, fmt.Errorf("verify rewritten stream: %w", err)
 		}
-		listing, err := Disassemble(doc.meta.Source, doc.meta.Raw, nextTrace)
+		renderView := doc.meta.View
+		if renderView == "" {
+			renderView = "trace"
+		}
+		listing, err := disassembleView(doc.meta.Source, doc.meta.Raw, nextTrace, renderView)
 		if err != nil {
 			return nil, err
 		}
@@ -295,6 +317,14 @@ func (s *Server) handle(method string, raw json.RawMessage) (any, error) {
 		}
 		return calls, nil
 	case "textDocument/hover":
+		if doc, entry, ok, err := s.tarEntryAt(raw); err != nil {
+			return nil, err
+		} else if ok {
+			return map[string]any{
+				"contents": map[string]any{"kind": "markdown", "value": doc.tarHover(entry)},
+				"range":    doc.lineRange(entry.Line),
+			}, nil
+		}
 		doc, op, err := s.operationAt(raw)
 		if err != nil || op == nil {
 			return nil, err
@@ -333,6 +363,14 @@ type locationLink struct {
 type textEdit struct {
 	Range   lspRange `json:"range"`
 	NewText string   `json:"newText"`
+}
+
+type documentSymbol struct {
+	Name           string   `json:"name"`
+	Detail         string   `json:"detail,omitempty"`
+	Kind           int      `json:"kind"`
+	Range          lspRange `json:"range"`
+	SelectionRange lspRange `json:"selectionRange"`
 }
 
 type itemData struct {
@@ -383,6 +421,27 @@ func (s *Server) operationAt(raw json.RawMessage) (*document, *deflate.Op, error
 	}
 	op := doc.trace.Ops[id]
 	return doc, &op, nil
+}
+
+func (s *Server) tarEntryAt(raw json.RawMessage) (*document, tarEntry, bool, error) {
+	var params struct {
+		TextDocument struct {
+			URI string `json:"uri"`
+		} `json:"textDocument"`
+		Position position `json:"position"`
+	}
+	if err := json.Unmarshal(raw, &params); err != nil {
+		return nil, tarEntry{}, false, err
+	}
+	doc, ok := s.docs[params.TextDocument.URI]
+	if !ok {
+		return nil, tarEntry{}, false, fmt.Errorf("document is not open: %s", params.TextDocument.URI)
+	}
+	if doc.loadErr != nil {
+		return nil, tarEntry{}, false, doc.loadErr
+	}
+	entry, ok := doc.tar[params.Position.Line]
+	return doc, entry, ok, nil
 }
 
 func (s *Server) literalAt(raw json.RawMessage) (*document, deflate.Op, error) {
@@ -559,6 +618,53 @@ func (d *document) item(op deflate.Op) callHierarchyItem {
 func (d *document) opRange(id int) lspRange {
 	line := d.opLine[id]
 	return lspRange{Start: position{Line: line}, End: position{Line: line, Character: d.lineLen[line]}}
+}
+
+func (d *document) lineRange(line int) lspRange {
+	return lspRange{Start: position{Line: line}, End: position{Line: line, Character: d.lineLen[line]}}
+}
+
+func (d *document) documentSymbols() []documentSymbol {
+	if len(d.tar) == 0 {
+		return []documentSymbol{}
+	}
+	lines := make([]int, 0, len(d.tar))
+	for line := range d.tar {
+		lines = append(lines, line)
+	}
+	sort.Ints(lines)
+	symbols := make([]documentSymbol, 0, len(lines))
+	for _, line := range lines {
+		entry := d.tar[line]
+		r := d.lineRange(line)
+		detail := fmt.Sprintf("%s · %d bytes · out[%d:%d]", entry.Kind, entry.Size, entry.Data.Start, entry.Data.End)
+		if entry.LinkName != "" {
+			detail += " → " + entry.LinkName
+		}
+		symbols = append(symbols, documentSymbol{
+			Name: entry.Name, Detail: detail, Kind: entry.SymbolKind, Range: r, SelectionRange: r,
+		})
+	}
+	return symbols
+}
+
+func (d *document) tarHover(entry tarEntry) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "**tar %s** `%s`  \n", entry.Kind, entry.Name)
+	fmt.Fprintf(&b, "Mode: `%s` · Size: `%d` bytes · Modified: `%s`  \n", entry.Mode, entry.Size, entry.Modified)
+	fmt.Fprintf(&b, "Header: `out[%d:%d)` · Data: `out[%d:%d)`", entry.Header.Start, entry.Header.End, entry.Data.Start, entry.Data.End)
+	if entry.LinkName != "" {
+		fmt.Fprintf(&b, "  \nLink target: `%s`", entry.LinkName)
+	}
+	query := entry.Data
+	if query.Start == query.End {
+		query = entry.Header
+	}
+	producers := d.trace.Producers(query)
+	if len(producers) != 0 {
+		fmt.Fprintf(&b, "  \nDEFLATE provenance: `%d` producing operations (first is %%%d)", len(producers), producers[0].Op.ID)
+	}
+	return b.String()
 }
 
 func (d *document) location(id int) location {
