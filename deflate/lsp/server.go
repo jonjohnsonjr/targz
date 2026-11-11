@@ -240,6 +240,14 @@ func (s *Server) handle(method string, raw json.RawMessage) (any, error) {
 			}},
 		}}, nil
 	case "textDocument/definition":
+		if link, found, isRFC, err := s.rfcDefinitionAt(raw); err != nil {
+			return nil, err
+		} else if isRFC {
+			if !found {
+				return []locationLink{}, nil
+			}
+			return []locationLink{link}, nil
+		}
 		if doc, node, ok, err := s.encodingAt(raw); err != nil {
 			return nil, err
 		} else if ok {
@@ -276,8 +284,20 @@ func (s *Server) handle(method string, raw json.RawMessage) (any, error) {
 		}
 		if op.Kind == deflate.MatchOp {
 			tokens := doc.tokens[op.ID]
+			if containsPosition(tokens.LengthExtra, at) {
+				if link, ok := doc.rfcLink(tokens.LengthExtra, lengthExtraRFCAnchor(op.LengthSymbol)); ok {
+					return []locationLink{link}, nil
+				}
+				return []locationLink{}, nil
+			}
+			if containsPosition(tokens.DistanceExtra, at) {
+				if link, ok := doc.rfcLink(tokens.DistanceExtra, distanceExtraRFCAnchor(op.DistanceSymbol)); ok {
+					return []locationLink{link}, nil
+				}
+				return []locationLink{}, nil
+			}
 			if containsPosition(tokens.Length, at) {
-				if link, ok, linkErr := s.encodingLink(doc, tokens.Length, doc.lengthDefs[op.ID]); linkErr != nil {
+				if link, ok, linkErr := s.encodingLink(doc, tokens.LengthSymbol, doc.lengthDefs[op.ID]); linkErr != nil {
 					return nil, linkErr
 				} else if ok {
 					return []locationLink{link}, nil
@@ -285,7 +305,7 @@ func (s *Server) handle(method string, raw json.RawMessage) (any, error) {
 				return []locationLink{}, nil
 			}
 			if containsPosition(tokens.Distance, at) {
-				if link, ok, linkErr := s.encodingLink(doc, tokens.Distance, doc.distanceDefs[op.ID]); linkErr != nil {
+				if link, ok, linkErr := s.encodingLink(doc, tokens.DistanceSymbol, doc.distanceDefs[op.ID]); linkErr != nil {
 					return nil, linkErr
 				} else if ok {
 					return []locationLink{link}, nil
@@ -491,6 +511,36 @@ func requestPosition(raw json.RawMessage) (position, error) {
 		return position{}, err
 	}
 	return params.Position, nil
+}
+
+func (s *Server) rfcDefinitionAt(raw json.RawMessage) (locationLink, bool, bool, error) {
+	var params struct {
+		TextDocument struct {
+			URI string `json:"uri"`
+		} `json:"textDocument"`
+		Position position `json:"position"`
+	}
+	if err := json.Unmarshal(raw, &params); err != nil {
+		return locationLink{}, false, false, err
+	}
+	doc, ok := s.docs[params.TextDocument.URI]
+	if !ok || doc.rfcLines == nil {
+		return locationLink{}, false, false, nil
+	}
+	origin, anchorName, ok := doc.rfcTermAt(params.Position)
+	if !ok {
+		return locationLink{}, false, true, nil
+	}
+	anchor, ok := rfcAnchors[anchorName]
+	if !ok || origin == anchor.Selection {
+		return locationLink{}, false, true, nil
+	}
+	return locationLink{
+		OriginSelectionRange: origin,
+		TargetURI:            doc.uri,
+		TargetRange:          anchor.TargetRange,
+		TargetSelectionRange: anchor.Selection,
+	}, true, true, nil
 }
 
 func containsPosition(r lspRange, p position) bool {
@@ -823,16 +873,21 @@ func (s *Server) encodingDefinition(d *document, node encodingNode) (locationLin
 	if node.Parent != "" {
 		return s.encodingLink(d, origin, node.Parent)
 	}
-	anchor, ok := rfcAnchors[node.RFCAnchor]
+	link, ok := d.rfcLink(origin, node.RFCAnchor)
+	return link, ok, nil
+}
+
+func (d *document) rfcLink(origin lspRange, anchorName string) (locationLink, bool) {
+	anchor, ok := rfcAnchors[anchorName]
 	if d.meta.RFC == "" || !ok {
-		return locationLink{}, false, nil
+		return locationLink{}, false
 	}
 	return locationLink{
 		OriginSelectionRange: origin,
 		TargetURI:            fileURI(d.meta.RFC),
 		TargetRange:          anchor.TargetRange,
 		TargetSelectionRange: anchor.Selection,
-	}, true, nil
+	}, true
 }
 
 func (s *Server) encodingReferences(d *document, node encodingNode, includeDeclaration bool) ([]location, error) {

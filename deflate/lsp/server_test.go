@@ -384,6 +384,193 @@ func TestMatchOperandsHaveIndependentDefinitions(t *testing.T) {
 	}
 }
 
+func TestMatchExtraBitsJumpToRFCTableCells(t *testing.T) {
+	input := bytes.Repeat([]byte("the quick brown fox jumps over the lazy dog; 0123456789\n"), 300)
+	var compressed bytes.Buffer
+	w, err := flate.NewWriter(&compressed, flate.BestCompression)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.Write(input); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	source := filepath.Join(t.TempDir(), "extras.deflate")
+	if err := os.WriteFile(source, compressed.Bytes(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	listing, err := DisassembleFileView(source, true, "trace")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	const uri = "file:///extras.deflate"
+	s := NewServer(bytes.NewReader(nil), &bytes.Buffer{})
+	doc := openDocument(uri, string(listing))
+	s.docs[uri] = doc
+	if doc.loadErr != nil {
+		t.Fatal(doc.loadErr)
+	}
+
+	lengthChecked, distanceChecked := false, false
+	for _, op := range doc.trace.Ops {
+		if op.Kind != deflate.MatchOp {
+			continue
+		}
+		tokens := doc.tokens[op.ID]
+		if !lengthChecked && op.LengthExtraBits.Len() != 0 {
+			if tokens.LengthSymbol == (lspRange{}) || tokens.LengthExtra == (lspRange{}) {
+				t.Fatalf("length operand was not split: %#v", tokens)
+			}
+			symbol := definitionLinksAtCharacter(t, s, uri, tokens.LengthSymbol.Start.Line, tokens.LengthSymbol.Start.Character)
+			if len(symbol) != 1 || !strings.HasSuffix(symbol[0].TargetURI, ".gzsym") {
+				t.Fatalf("length symbol definition = %#v, want Huffman symbol document", symbol)
+			}
+			extra := definitionLinksAtCharacter(t, s, uri, tokens.LengthExtra.Start.Line, tokens.LengthExtra.Start.Character)
+			want := rfcAnchors[lengthExtraRFCAnchor(op.LengthSymbol)].Selection
+			if len(extra) != 1 || !strings.HasSuffix(extra[0].TargetURI, "/doc/rfc1951.txt") || extra[0].TargetSelectionRange != want {
+				t.Fatalf("length extra definition = %#v, want RFC cell %#v", extra, want)
+			}
+			lengthChecked = true
+		}
+		if !distanceChecked && op.DistanceExtraBits.Len() != 0 {
+			if tokens.DistanceSymbol == (lspRange{}) || tokens.DistanceExtra == (lspRange{}) {
+				t.Fatalf("distance operand was not split: %#v", tokens)
+			}
+			symbol := definitionLinksAtCharacter(t, s, uri, tokens.DistanceSymbol.Start.Line, tokens.DistanceSymbol.Start.Character)
+			if len(symbol) != 1 || !strings.HasSuffix(symbol[0].TargetURI, ".gzsym") {
+				t.Fatalf("distance symbol definition = %#v, want Huffman symbol document", symbol)
+			}
+			extra := definitionLinksAtCharacter(t, s, uri, tokens.DistanceExtra.Start.Line, tokens.DistanceExtra.Start.Character)
+			want := rfcAnchors[distanceExtraRFCAnchor(op.DistanceSymbol)].Selection
+			if len(extra) != 1 || !strings.HasSuffix(extra[0].TargetURI, "/doc/rfc1951.txt") || extra[0].TargetSelectionRange != want {
+				t.Fatalf("distance extra definition = %#v, want RFC cell %#v", extra, want)
+			}
+			distanceChecked = true
+		}
+	}
+	if !lengthChecked || !distanceChecked {
+		t.Fatalf("fixture extra-bit coverage: length=%v distance=%v", lengthChecked, distanceChecked)
+	}
+}
+
+func TestRFCDefinitionsResolveTermsAndSections(t *testing.T) {
+	rfcPath := filepath.Join("..", "..", "doc", "rfc1951.txt")
+	contents, err := os.ReadFile(rfcPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	uri := fileURI(rfcPath)
+	s := NewServer(bytes.NewReader(nil), &bytes.Buffer{})
+	doc := openDocument(uri, string(contents))
+	s.docs[uri] = doc
+	if doc.rfcLines == nil || doc.loadErr != nil {
+		t.Fatalf("RFC document = %#v", doc)
+	}
+
+	tests := []struct {
+		name      string
+		line, col int
+		anchor    string
+	}{
+		{"BTYPE use", 575, 39, "term-btype"},
+		{"HLIT use", 743, 16, "term-hlit"},
+		{"literal length alphabet", 743, 55, "term-literal-length"},
+		{"distance alphabet", 746, 60, "term-distance"},
+		{"code length alphabet", 744, 40, "term-code-length"},
+		{"section cross reference", 686, 30, "section-3.2.5"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			links := definitionLinksAtCharacter(t, s, uri, test.line, test.col)
+			want := rfcAnchors[test.anchor].Selection
+			if len(links) != 1 || links[0].TargetURI != uri || links[0].TargetSelectionRange != want {
+				t.Fatalf("definition = %#v, want %s at %#v", links, test.anchor, want)
+			}
+		})
+	}
+
+	canonical := rfcAnchors["term-hclen"].Selection.Start
+	if links := definitionLinksAtCharacter(t, s, uri, canonical.Line, canonical.Character); len(links) != 0 {
+		t.Fatalf("canonical HCLEN definition loops to itself: %#v", links)
+	}
+}
+
+func TestRFCAnchorSelectionsRemainExact(t *testing.T) {
+	contents, err := os.ReadFile(filepath.Join("..", "..", "doc", "rfc1951.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(string(contents), "\n")
+	expected := map[string]string{
+		"term-bfinal":         "BFINAL",
+		"term-btype":          "BTYPE",
+		"term-literal-length": "literal/length",
+		"term-distance":       "distance",
+		"term-code-length":    "alphabet for code lengths",
+		"term-hlit":           "HLIT",
+		"term-hdist":          "HDIST",
+		"term-hclen":          "HCLEN",
+		"section-3.2.1":       "3.2.1",
+		"section-3.2.2":       "3.2.2",
+		"section-3.2.3":       "3.2.3",
+		"section-3.2.4":       "3.2.4",
+		"section-3.2.5":       "3.2.5",
+		"section-3.2.6":       "3.2.6",
+		"section-3.2.7":       "3.2.7",
+	}
+	for name, want := range expected {
+		got := selectedRFCText(lines, rfcAnchors[name].Selection)
+		if got != want {
+			t.Errorf("%s selects %q, want %q", name, got, want)
+		}
+	}
+
+	hclenOrder := []int{16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15}
+	for field, symbol := range hclenOrder {
+		name := hclenRFCAnchor(field)
+		if got, want := selectedRFCText(lines, rfcAnchors[name].Selection), strconv.Itoa(symbol); got != want {
+			t.Errorf("%s selects %q, want %q", name, got, want)
+		}
+	}
+	for symbol := 257; symbol <= 285; symbol++ {
+		extra := 0
+		switch {
+		case symbol >= 281 && symbol <= 284:
+			extra = 5
+		case symbol >= 277 && symbol <= 280:
+			extra = 4
+		case symbol >= 273 && symbol <= 276:
+			extra = 3
+		case symbol >= 269 && symbol <= 272:
+			extra = 2
+		case symbol >= 265 && symbol <= 268:
+			extra = 1
+		}
+		name := lengthExtraRFCAnchor(symbol)
+		if got, want := selectedRFCText(lines, rfcAnchors[name].Selection), strconv.Itoa(extra); got != want {
+			t.Errorf("%s selects %q, want %q", name, got, want)
+		}
+	}
+	for symbol := 0; symbol <= 29; symbol++ {
+		extra := 0
+		if symbol >= 4 {
+			extra = symbol/2 - 1
+		}
+		name := distanceExtraRFCAnchor(symbol)
+		if got, want := selectedRFCText(lines, rfcAnchors[name].Selection), strconv.Itoa(extra); got != want {
+			t.Errorf("%s selects %q, want %q", name, got, want)
+		}
+	}
+}
+
+func selectedRFCText(lines []string, selection lspRange) string {
+	line := lines[selection.Start.Line]
+	return line[selection.Start.Character:selection.End.Character]
+}
+
 func TestAutoViewDetectsTarAndExposesEntries(t *testing.T) {
 	source := filepath.Join(t.TempDir(), "archive.tar.gz")
 	var tarBytes bytes.Buffer

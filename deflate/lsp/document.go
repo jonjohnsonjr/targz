@@ -44,17 +44,22 @@ type document struct {
 	literalDefs  map[int]string
 	lengthDefs   map[int]string
 	distanceDefs map[int]string
+	rfcLines     []string
 	loadErr      error
 }
 
 type opTokens struct {
-	Bits     lspRange
-	Literal  lspRange
-	Length   lspRange
-	Distance lspRange
-	Backref  lspRange
-	Output   lspRange
-	Seed     lspRange
+	Bits           lspRange
+	Literal        lspRange
+	Length         lspRange
+	LengthSymbol   lspRange
+	LengthExtra    lspRange
+	Distance       lspRange
+	DistanceSymbol lspRange
+	DistanceExtra  lspRange
+	Backref        lspRange
+	Output         lspRange
+	Seed           lspRange
 }
 
 // DisassembleFile parses source and renders the stable, one-operation-per-line
@@ -141,6 +146,9 @@ func disassembleView(source string, raw bool, trace *deflate.Trace, requested st
 }
 
 func openDocument(uri, text string) *document {
+	if strings.HasSuffix(uri, "/rfc1951.txt") && !strings.Contains(text, headerPrefix) {
+		return openRFCDocument(uri, text)
+	}
 	doc := &document{
 		uri: uri, lineOp: make(map[int]int), opLine: make(map[int]int),
 		lineLen: make(map[int]int), tokens: make(map[int]opTokens), tar: make(map[int]tarEntry),
@@ -255,6 +263,21 @@ func openDocument(uri, text string) *document {
 	return doc
 }
 
+func openRFCDocument(uri, text string) *document {
+	doc := &document{uri: uri, lineLen: make(map[int]int)}
+	doc.rfcLines = strings.Split(strings.TrimSuffix(text, "\n"), "\n")
+	for line, value := range doc.rfcLines {
+		doc.lineLen[line] = len(utf16.Encode([]rune(value)))
+	}
+	if strings.HasSuffix(text, "\n") {
+		doc.end = position{Line: len(doc.rfcLines)}
+	} else if len(doc.rfcLines) != 0 {
+		last := len(doc.rfcLines) - 1
+		doc.end = position{Line: last, Character: doc.lineLen[last]}
+	}
+	return doc
+}
+
 func renderSymbolDocument(meta metadata, trace *deflate.Trace, block int, alphabet string) ([]byte, error) {
 	graph := buildEncodingGraph(trace)
 	maxSymbol := -1
@@ -328,12 +351,18 @@ func opTokenRanges(line string, lineNumber int, op deflate.Op) opTokens {
 		}
 		distanceStart := separator + 2
 		backref := byteRange(line, lineNumber, min(comment+4, len(line)), len(line))
+		lengthSymbol, lengthExtra := operandTokenRanges(line, lineNumber, 0, separator)
+		distanceSymbol, distanceExtra := operandTokenRanges(line, lineNumber, distanceStart, comment)
 		return opTokens{
-			Length:   byteRange(line, lineNumber, 0, separator),
-			Distance: byteRange(line, lineNumber, distanceStart, comment),
-			Backref:  backref,
-			Output:   backref,
-			Seed:     backref,
+			Length:         byteRange(line, lineNumber, 0, separator),
+			LengthSymbol:   lengthSymbol,
+			LengthExtra:    lengthExtra,
+			Distance:       byteRange(line, lineNumber, distanceStart, comment),
+			DistanceSymbol: distanceSymbol,
+			DistanceExtra:  distanceExtra,
+			Backref:        backref,
+			Output:         backref,
+			Seed:           backref,
 		}
 	case deflate.StoredOp:
 		whole := byteRange(line, lineNumber, 0, len(line))
@@ -341,6 +370,16 @@ func opTokenRanges(line string, lineNumber int, op deflate.Op) opTokens {
 	default:
 		return opTokens{}
 	}
+}
+
+func operandTokenRanges(line string, lineNumber, start, end int) (lspRange, lspRange) {
+	dot := strings.Index(line[start:end], "·")
+	if dot < 0 {
+		return byteRange(line, lineNumber, start, end), lspRange{}
+	}
+	dot += start
+	dotEnd := dot + len("·")
+	return byteRange(line, lineNumber, start, dot), byteRange(line, lineNumber, dotEnd, end)
 }
 
 func byteRange(line string, lineNumber, start, end int) lspRange {

@@ -118,6 +118,13 @@ slot it assigns. The final definition opens the vendored
 Fixed-Huffman literals take the shorter path from their generated table entry
 to the appropriate row of the §3.2.6 table.
 
+Match operands preserve the boundary between the Huffman symbol and its extra
+bits as `symbol·extra`. Go to Definition before the dot follows the Huffman
+ancestry described above; Go to Definition after the dot jumps directly to
+that symbol's `Extra Bits` cell in the length or distance table in §3.2.5.
+This also applies to fixed-Huffman blocks: their symbol path ends in §3.2.6,
+while their extra bits still end in §3.2.5.
+
 Huffman tables, expanded length assignments, the compact length program, and
 the HCLEN vector open as generated `*.gzsym` documents. Their zero-based LSP
 line is the semantic address: literal/length symbol 257 and its assignment are
@@ -148,7 +155,12 @@ RFC destinations use a static semantic anchor index. The link retains the
 governing paragraph as context while selecting the exact token: an HCLEN field
 lands on its symbol in the §3.2.7 transmission-order list, and fixed-Huffman
 symbols land on their precise literal range or the `Distance codes 0-31`
-phrase in §3.2.6.
+phrase in §3.2.6. The RFC is itself navigable: Go to Definition on `BFINAL`,
+`BTYPE`, `HLIT`, `HDIST`, `HCLEN`, the three Huffman-alphabet names, or a
+section reference from `3.2.1` through `3.2.7` jumps to its canonical
+definition. Canonical occurrences intentionally have no self-link. Tests pin
+every table cell and named anchor to its selected RFC text so a changed
+vendored copy fails loudly instead of sending the cursor somewhere plausible.
 
 ### gsip
 
