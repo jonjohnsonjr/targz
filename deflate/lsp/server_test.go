@@ -3,6 +3,7 @@ package lsp
 import (
 	"archive/tar"
 	"bytes"
+	"compress/flate"
 	"compress/gzip"
 	"encoding/json"
 	"os"
@@ -14,6 +15,141 @@ import (
 
 	"github.com/jonjohnsonjr/targz/deflate"
 )
+
+func TestDynamicLiteralDefinitionWalksToRFC(t *testing.T) {
+	input := bytes.Repeat([]byte("the quick brown fox jumps over the lazy dog; 0123456789\n"), 300)
+	var compressed bytes.Buffer
+	w, err := flate.NewWriter(&compressed, flate.BestCompression)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.Write(input); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	trace, err := deflate.ParseRaw(compressed.Bytes())
+	if err != nil {
+		t.Fatal(err)
+	}
+	dynamicBlock := -1
+	for _, block := range trace.Blocks {
+		if block.Kind == deflate.DynamicBlock {
+			dynamicBlock = block.ID
+			break
+		}
+	}
+	if dynamicBlock < 0 {
+		t.Fatalf("fixture blocks = %#v, want a dynamic block", trace.Blocks)
+	}
+	source := filepath.Join(t.TempDir(), "dynamic.deflate")
+	if err := os.WriteFile(source, compressed.Bytes(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	listing, err := DisassembleFileView(source, true, "trace")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	const uri = "file:///dynamic.deflate"
+	s := NewServer(bytes.NewReader(nil), &bytes.Buffer{})
+	doc := openDocument(uri, string(listing))
+	s.docs[uri] = doc
+	if doc.loadErr != nil {
+		t.Fatal(doc.loadErr)
+	}
+	literalID := -1
+	for _, op := range doc.trace.Ops {
+		if op.BlockID == dynamicBlock && op.Kind == deflate.LiteralOp {
+			literalID = op.ID
+			break
+		}
+	}
+	if literalID < 0 {
+		t.Fatal("dynamic block has no literal")
+	}
+
+	line := doc.opLine[literalID]
+	wantLabels := []string{".litlen.", ".lengths.", ".codelen.", ".hclen."}
+	for _, fragment := range wantLabels {
+		links := definitionLinksAt(t, s, uri, line)
+		if len(links) != 1 || links[0].TargetURI != uri {
+			t.Fatalf("definition from line %d = %#v, want one local link", line, links)
+		}
+		line = links[0].TargetSelectionRange.Start.Line
+		label := doc.encodingLine[line]
+		if !strings.Contains(label, fragment) {
+			t.Fatalf("definition target = %q, want fragment %q", label, fragment)
+		}
+	}
+	links := definitionLinksAt(t, s, uri, line)
+	if len(links) != 1 || !strings.HasSuffix(links[0].TargetURI, "/doc/rfc1951.txt") {
+		t.Fatalf("HCLEN definition = %#v, want vendored RFC", links)
+	}
+	if links[0].TargetSelectionRange.Start.Line != 734 {
+		t.Fatalf("RFC selection line = %d, want 734", links[0].TargetSelectionRange.Start.Line)
+	}
+}
+
+func TestFixedLiteralDefinitionJumpsToRFCTable(t *testing.T) {
+	// A final fixed-Huffman block containing the literal 'A' and end-of-block.
+	compressed := []byte{0x73, 0x04, 0x00}
+	trace, err := deflate.ParseRaw(compressed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(trace.Blocks) != 1 || trace.Blocks[0].Kind != deflate.FixedBlock {
+		t.Fatalf("blocks = %#v, want one fixed block", trace.Blocks)
+	}
+	source := filepath.Join(t.TempDir(), "fixed.deflate")
+	if err := os.WriteFile(source, compressed, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	listing, err := DisassembleFileView(source, true, "trace")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	const uri = "file:///fixed.deflate"
+	s := NewServer(bytes.NewReader(nil), &bytes.Buffer{})
+	doc := openDocument(uri, string(listing))
+	s.docs[uri] = doc
+	if doc.loadErr != nil {
+		t.Fatal(doc.loadErr)
+	}
+	first := definitionLinksAt(t, s, uri, doc.opLine[0])
+	if len(first) != 1 || first[0].TargetURI != uri {
+		t.Fatalf("literal definition = %#v, want fixed table entry", first)
+	}
+	entryLine := first[0].TargetSelectionRange.Start.Line
+	if label := doc.encodingLine[entryLine]; label != "@b0.litlen.65" {
+		t.Fatalf("fixed entry label = %q", label)
+	}
+	root := definitionLinksAt(t, s, uri, entryLine)
+	if len(root) != 1 || !strings.HasSuffix(root[0].TargetURI, "/doc/rfc1951.txt") {
+		t.Fatalf("fixed entry definition = %#v, want vendored RFC", root)
+	}
+	if root[0].TargetSelectionRange.Start.Line != 662 {
+		t.Fatalf("fixed RFC selection line = %d, want 662", root[0].TargetSelectionRange.Start.Line)
+	}
+}
+
+func definitionLinksAt(t testing.TB, s *Server, uri string, line int) []locationLink {
+	t.Helper()
+	params, err := json.Marshal(map[string]any{
+		"textDocument": map[string]any{"uri": uri},
+		"position":     map[string]any{"line": line, "character": 1},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := s.handle("textDocument/definition", params)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return result.([]locationLink)
+}
 
 func TestAutoViewDetectsTarAndExposesEntries(t *testing.T) {
 	source := filepath.Join(t.TempDir(), "archive.tar.gz")

@@ -136,6 +136,46 @@ type Block struct {
 	LiteralTable  *HuffmanTable
 	DistanceTable *HuffmanTable
 	CodeTable     *HuffmanTable
+	Dynamic       *DynamicHeader
+}
+
+// DynamicHeader retains the two-level Huffman description of a BTYPE=10
+// block. It is intentionally lossless enough for tooling to walk from a data
+// symbol, through the code-length program which defined it, back to the raw
+// HCLEN fields in the stream.
+type DynamicHeader struct {
+	NumLiteralLengths  int
+	NumDistanceLengths int
+	NumCodeLengths     int
+
+	HLIT  BitRange
+	HDIST BitRange
+	HCLEN BitRange
+
+	CodeLengths []CodeLengthField
+	LengthRuns  []CodeLengthRun
+}
+
+// CodeLengthField is one raw three-bit code length from the HCLEN-ordered
+// code-length alphabet.
+type CodeLengthField struct {
+	Symbol int
+	Length uint8
+	Input  BitRange
+}
+
+// CodeLengthRun is one symbol decoded with the code-length Huffman code. The
+// half-open Slots range indexes the concatenated literal/length then distance
+// code-length sequence.
+type CodeLengthRun struct {
+	Symbol     int
+	Length     uint8
+	Repeat     int
+	SlotsStart int
+	SlotsEnd   int
+	Input      BitRange
+	SymbolBits BitRange
+	ExtraBits  BitRange
 }
 
 // HuffmanCode is one canonical Huffman code. Code is written in the natural

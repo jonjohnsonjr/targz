@@ -103,6 +103,14 @@ of constructing a thousand-node chain for `match len=1000 dist=1`, the match
 has one outgoing edge to its one-byte seed and reports the repetition count in
 the hierarchy detail.
 
+Dynamic Huffman literals also have a navigable encoding ancestry. Repeated
+**Go to Definition** walks from the literal/length table entry, to the encoded
+code-length assignment (including repeat codes 16–18), to the code-length
+Huffman table, to its raw three-bit HCLEN field. The final definition opens the
+vendored [`doc/rfc1951.txt`](doc/rfc1951.txt) at the governing table in §3.2.7.
+Fixed-Huffman literals take the shorter path from their generated table entry
+to the appropriate row of the §3.2.6 table.
+
 ### gsip
 
 `gsip` is very similar to [`compress/gzip`](https://pkg.go.dev/compress/gzip) but for an `io.ReaderAt` instead of an `io.Reader`.

@@ -234,9 +234,26 @@ func (s *Server) handle(method string, raw json.RawMessage) (any, error) {
 			}},
 		}}, nil
 	case "textDocument/definition":
+		if doc, node, ok, err := s.encodingAt(raw); err != nil {
+			return nil, err
+		} else if ok {
+			link, found := doc.encodingDefinition(node)
+			if !found {
+				return []locationLink{}, nil
+			}
+			return []locationLink{link}, nil
+		}
 		doc, op, err := s.operationAt(raw)
 		if err != nil || op == nil {
 			return nil, err
+		}
+		if op.Kind == deflate.LiteralOp {
+			if label := doc.literalDefs[op.ID]; label != "" {
+				if link, ok := doc.encodingLink(doc.tokens[op.ID].Literal, label); ok {
+					return []locationLink{link}, nil
+				}
+			}
+			return []locationLink{}, nil
 		}
 		seed, ok := op.Seed()
 		if !ok {
@@ -442,6 +459,31 @@ func (s *Server) tarEntryAt(raw json.RawMessage) (*document, tarEntry, bool, err
 	}
 	entry, ok := doc.tar[params.Position.Line]
 	return doc, entry, ok, nil
+}
+
+func (s *Server) encodingAt(raw json.RawMessage) (*document, encodingNode, bool, error) {
+	var params struct {
+		TextDocument struct {
+			URI string `json:"uri"`
+		} `json:"textDocument"`
+		Position position `json:"position"`
+	}
+	if err := json.Unmarshal(raw, &params); err != nil {
+		return nil, encodingNode{}, false, err
+	}
+	doc, ok := s.docs[params.TextDocument.URI]
+	if !ok {
+		return nil, encodingNode{}, false, fmt.Errorf("document is not open: %s", params.TextDocument.URI)
+	}
+	if doc.loadErr != nil {
+		return nil, encodingNode{}, false, doc.loadErr
+	}
+	label, ok := doc.encodingLine[params.Position.Line]
+	if !ok {
+		return doc, encodingNode{}, false, nil
+	}
+	node, ok := doc.encoding[label]
+	return doc, node, ok, nil
 }
 
 func (s *Server) literalAt(raw json.RawMessage) (*document, deflate.Op, error) {
@@ -685,6 +727,48 @@ func (d *document) link(originID, targetID int) locationLink {
 		TargetURI:            d.uri,
 		TargetRange:          d.opRange(targetID),
 		TargetSelectionRange: target,
+	}
+}
+
+func (d *document) encodingLink(origin lspRange, label string) (locationLink, bool) {
+	target, ok := d.encoding[label]
+	if !ok {
+		return locationLink{}, false
+	}
+	return locationLink{
+		OriginSelectionRange: origin,
+		TargetURI:            d.uri,
+		TargetRange:          d.lineRange(target.Line),
+		TargetSelectionRange: d.encodingSelection(target),
+	}, true
+}
+
+func (d *document) encodingDefinition(node encodingNode) (locationLink, bool) {
+	origin := d.encodingSelection(node)
+	if node.Parent != "" {
+		return d.encodingLink(origin, node.Parent)
+	}
+	if d.meta.RFC == "" || node.RFCEnd <= node.RFCStart {
+		return locationLink{}, false
+	}
+	return locationLink{
+		OriginSelectionRange: origin,
+		TargetURI:            fileURI(d.meta.RFC),
+		TargetRange: lspRange{
+			Start: position{Line: node.RFCStart},
+			End:   position{Line: node.RFCEnd},
+		},
+		TargetSelectionRange: lspRange{
+			Start: position{Line: node.RFCSelect},
+			End:   position{Line: node.RFCSelect + 1},
+		},
+	}, true
+}
+
+func (d *document) encodingSelection(node encodingNode) lspRange {
+	return lspRange{
+		Start: position{Line: node.Line},
+		End:   position{Line: node.Line, Character: len(node.Label)},
 	}
 }
 

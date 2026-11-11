@@ -121,7 +121,7 @@ func (p *parser) blocks(historyBase OutPos) error {
 			}
 		case 2:
 			block.Kind = DynamicBlock
-			lit, dist, code, err := p.dynamicTables()
+			lit, dist, code, dynamic, err := p.dynamicTables()
 			if err != nil {
 				return err
 			}
@@ -129,6 +129,7 @@ func (p *parser) blocks(historyBase OutPos) error {
 			block.LiteralTable = cloneTable(lit)
 			block.DistanceTable = cloneTable(dist)
 			block.CodeTable = cloneTable(code)
+			block.Dynamic = dynamic
 			if err := p.compressedBlock(&block, lit, dist, historyBase); err != nil {
 				return err
 			}
@@ -251,95 +252,109 @@ func (p *parser) compressedBlock(block *Block, lit, dist *decoderTable, historyB
 	}
 }
 
-func (p *parser) dynamicTables() (lit, dist, code *decoderTable, err error) {
+func (p *parser) dynamicTables() (lit, dist, code *decoderTable, header *DynamicHeader, err error) {
 	start := p.r.position()
-	nlitBits, _, err := p.r.bits(5)
+	nlitBits, nlitSpan, err := p.r.bits(5)
 	if err != nil {
-		return nil, nil, nil, p.fail(start, "reading HLIT: %v", err)
+		return nil, nil, nil, nil, p.fail(start, "reading HLIT: %v", err)
 	}
-	ndistBits, _, err := p.r.bits(5)
+	ndistBits, ndistSpan, err := p.r.bits(5)
 	if err != nil {
-		return nil, nil, nil, p.fail(start, "reading HDIST: %v", err)
+		return nil, nil, nil, nil, p.fail(start, "reading HDIST: %v", err)
 	}
-	nclenBits, _, err := p.r.bits(4)
+	nclenBits, nclenSpan, err := p.r.bits(4)
 	if err != nil {
-		return nil, nil, nil, p.fail(start, "reading HCLEN: %v", err)
+		return nil, nil, nil, nil, p.fail(start, "reading HCLEN: %v", err)
 	}
 	nlit := int(nlitBits) + 257
 	ndist := int(ndistBits) + 1
 	nclen := int(nclenBits) + 4
 	if nlit > 286 || ndist > 32 {
-		return nil, nil, nil, p.fail(start, "invalid dynamic table sizes HLIT=%d HDIST=%d", nlit, ndist)
+		return nil, nil, nil, nil, p.fail(start, "invalid dynamic table sizes HLIT=%d HDIST=%d", nlit, ndist)
+	}
+	header = &DynamicHeader{
+		NumLiteralLengths: nlit, NumDistanceLengths: ndist, NumCodeLengths: nclen,
+		HLIT: nlitSpan, HDIST: ndistSpan, HCLEN: nclenSpan,
 	}
 
 	codeLengths := make([]uint8, 19)
 	for i := 0; i < nclen; i++ {
-		v, _, readErr := p.r.bits(3)
+		v, span, readErr := p.r.bits(3)
 		if readErr != nil {
-			return nil, nil, nil, p.fail(p.r.position(), "reading code-length alphabet: %v", readErr)
+			return nil, nil, nil, nil, p.fail(p.r.position(), "reading code-length alphabet: %v", readErr)
 		}
-		codeLengths[codeOrder[i]] = uint8(v)
+		symbol := codeOrder[i]
+		codeLengths[symbol] = uint8(v)
+		header.CodeLengths = append(header.CodeLengths, CodeLengthField{Symbol: symbol, Length: uint8(v), Input: span})
 	}
 	code, err = buildTable(codeLengths)
 	if err != nil {
-		return nil, nil, nil, p.fail(start, "building code-length table: %v", err)
+		return nil, nil, nil, nil, p.fail(start, "building code-length table: %v", err)
 	}
 	if code.max == 0 {
-		return nil, nil, nil, p.fail(start, "empty code-length table")
+		return nil, nil, nil, nil, p.fail(start, "empty code-length table")
 	}
 
 	lengths := make([]uint8, 0, nlit+ndist)
 	for len(lengths) < cap(lengths) {
 		symbol, span, decodeErr := code.decode(p.r)
 		if decodeErr != nil {
-			return nil, nil, nil, p.fail(span.Start, "decoding code length: %v", decodeErr)
+			return nil, nil, nil, nil, p.fail(span.Start, "decoding code length: %v", decodeErr)
 		}
+		run := CodeLengthRun{Symbol: symbol, SlotsStart: len(lengths), SymbolBits: span, Input: span}
 		switch {
 		case symbol < 16:
+			run.Length, run.Repeat = uint8(symbol), 1
 			lengths = append(lengths, uint8(symbol))
 		case symbol == 16:
 			if len(lengths) == 0 {
-				return nil, nil, nil, p.fail(span.Start, "code 16 has no previous length")
+				return nil, nil, nil, nil, p.fail(span.Start, "code 16 has no previous length")
 			}
-			extra, _, readErr := p.r.bits(2)
+			extra, extraSpan, readErr := p.r.bits(2)
 			if readErr != nil {
-				return nil, nil, nil, p.fail(p.r.position(), "reading code-16 repeat: %v", readErr)
+				return nil, nil, nil, nil, p.fail(p.r.position(), "reading code-16 repeat: %v", readErr)
 			}
-			for range int(extra) + 3 {
+			run.Length, run.Repeat, run.ExtraBits = lengths[len(lengths)-1], int(extra)+3, extraSpan
+			for range run.Repeat {
 				lengths = append(lengths, lengths[len(lengths)-1])
 			}
 		case symbol == 17:
-			extra, _, readErr := p.r.bits(3)
+			extra, extraSpan, readErr := p.r.bits(3)
 			if readErr != nil {
-				return nil, nil, nil, p.fail(p.r.position(), "reading code-17 repeat: %v", readErr)
+				return nil, nil, nil, nil, p.fail(p.r.position(), "reading code-17 repeat: %v", readErr)
 			}
-			lengths = append(lengths, make([]uint8, int(extra)+3)...)
+			run.Repeat, run.ExtraBits = int(extra)+3, extraSpan
+			lengths = append(lengths, make([]uint8, run.Repeat)...)
 		case symbol == 18:
-			extra, _, readErr := p.r.bits(7)
+			extra, extraSpan, readErr := p.r.bits(7)
 			if readErr != nil {
-				return nil, nil, nil, p.fail(p.r.position(), "reading code-18 repeat: %v", readErr)
+				return nil, nil, nil, nil, p.fail(p.r.position(), "reading code-18 repeat: %v", readErr)
 			}
-			lengths = append(lengths, make([]uint8, int(extra)+11)...)
+			run.Repeat, run.ExtraBits = int(extra)+11, extraSpan
+			lengths = append(lengths, make([]uint8, run.Repeat)...)
 		default:
-			return nil, nil, nil, p.fail(span.Start, "invalid code-length symbol %d", symbol)
+			return nil, nil, nil, nil, p.fail(span.Start, "invalid code-length symbol %d", symbol)
 		}
+		run.SlotsEnd = len(lengths)
+		run.Input.End = p.r.position()
+		header.LengthRuns = append(header.LengthRuns, run)
 		if len(lengths) > cap(lengths) {
-			return nil, nil, nil, p.fail(span.Start, "code lengths exceed HLIT+HDIST")
+			return nil, nil, nil, nil, p.fail(span.Start, "code lengths exceed HLIT+HDIST")
 		}
 	}
 
 	lit, err = buildTable(lengths[:nlit])
 	if err != nil {
-		return nil, nil, nil, p.fail(start, "building literal/length table: %v", err)
+		return nil, nil, nil, nil, p.fail(start, "building literal/length table: %v", err)
 	}
 	if lengths[256] == 0 {
-		return nil, nil, nil, p.fail(start, "literal/length table has no end-of-block symbol")
+		return nil, nil, nil, nil, p.fail(start, "literal/length table has no end-of-block symbol")
 	}
 	dist, err = buildTable(lengths[nlit:])
 	if err != nil {
-		return nil, nil, nil, p.fail(start, "building distance table: %v", err)
+		return nil, nil, nil, nil, p.fail(start, "building distance table: %v", err)
 	}
-	return lit, dist, code, nil
+	return lit, dist, code, header, nil
 }
 
 func isUnexpectedEOF(err error) bool {

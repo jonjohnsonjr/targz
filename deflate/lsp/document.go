@@ -23,19 +23,23 @@ type metadata struct {
 	Source string `json:"source"`
 	Raw    bool   `json:"raw"`
 	View   string `json:"view,omitempty"`
+	RFC    string `json:"rfc,omitempty"`
 }
 
 type document struct {
-	uri     string
-	meta    metadata
-	trace   *deflate.Trace
-	end     position
-	lineOp  map[int]int
-	opLine  map[int]int
-	lineLen map[int]int
-	tokens  map[int]opTokens
-	tar     map[int]tarEntry
-	loadErr error
+	uri          string
+	meta         metadata
+	trace        *deflate.Trace
+	end          position
+	lineOp       map[int]int
+	opLine       map[int]int
+	lineLen      map[int]int
+	tokens       map[int]opTokens
+	tar          map[int]tarEntry
+	encoding     map[string]encodingNode
+	encodingLine map[int]string
+	literalDefs  map[int]string
+	loadErr      error
 }
 
 type opTokens struct {
@@ -89,7 +93,7 @@ func disassembleView(source string, raw bool, trace *deflate.Trace, requested st
 	if view == "tar" && !isTar {
 		return nil, fmt.Errorf("decoded output is not a tar archive")
 	}
-	metaValue := metadata{Source: source, Raw: raw, View: view}
+	metaValue := metadata{Source: source, Raw: raw, View: view, RFC: locateRFC1951(source)}
 	meta, err := json.Marshal(metaValue)
 	if err != nil {
 		return nil, err
@@ -100,20 +104,33 @@ func disassembleView(source string, raw bool, trace *deflate.Trace, requested st
 	var out bytes.Buffer
 	fmt.Fprintf(&out, "%s%s\n", headerPrefix, meta)
 	fmt.Fprintf(&out, "# %d output bytes, %d blocks, %d operations\n\n", len(trace.Output), len(trace.Blocks), len(trace.Ops))
-	for _, op := range trace.Ops {
-		switch op.Kind {
-		case deflate.LiteralOp:
-			fmt.Fprintf(&out, "%%%d  literal %-6s out[%d:%d] bits[%s:%s]\n",
-				op.ID, quoteByte(op.Literal), op.Output.Start, op.Output.End, op.Input.Start, op.Input.End)
-		case deflate.StoredOp:
-			fmt.Fprintf(&out, "%%%d  stored  len=%d out[%d:%d] bits[%s:%s]\n",
-				op.ID, op.Length, op.Output.Start, op.Output.End, op.Input.Start, op.Input.End)
-		case deflate.MatchOp:
-			seed, _ := op.Seed()
-			fmt.Fprintf(&out, "%%%d  match   len=%d dist=%d out[%d:%d] seed[%d:%d] bits[%s:%s]\n",
-				op.ID, op.Length, op.Distance, op.Output.Start, op.Output.End,
-				seed.Start, seed.End, op.Input.Start, op.Input.End)
+	graph := buildEncodingGraph(trace)
+	for _, block := range trace.Blocks {
+		fmt.Fprintf(&out, "# block %d · %s Huffman · bits[%s:%s]\n", block.ID, block.Kind, block.Input.Start, block.Input.End)
+		for _, node := range graph.Nodes {
+			if node.BlockID == block.ID {
+				fmt.Fprintf(&out, "%-18s %s\n", node.Label, node.Text)
+			}
 		}
+		if len(graph.Nodes) != 0 {
+			out.WriteByte('\n')
+		}
+		for _, op := range trace.Ops[block.FirstOp : block.FirstOp+block.NumOps] {
+			switch op.Kind {
+			case deflate.LiteralOp:
+				fmt.Fprintf(&out, "%%%d  literal %-6s out[%d:%d] bits[%s:%s]\n",
+					op.ID, quoteByte(op.Literal), op.Output.Start, op.Output.End, op.Input.Start, op.Input.End)
+			case deflate.StoredOp:
+				fmt.Fprintf(&out, "%%%d  stored  len=%d out[%d:%d] bits[%s:%s]\n",
+					op.ID, op.Length, op.Output.Start, op.Output.End, op.Input.Start, op.Input.End)
+			case deflate.MatchOp:
+				seed, _ := op.Seed()
+				fmt.Fprintf(&out, "%%%d  match   len=%d dist=%d out[%d:%d] seed[%d:%d] bits[%s:%s]\n",
+					op.ID, op.Length, op.Distance, op.Output.Start, op.Output.End,
+					seed.Start, seed.End, op.Input.Start, op.Input.End)
+			}
+		}
+		out.WriteByte('\n')
 	}
 	return out.Bytes(), nil
 }
@@ -122,7 +139,9 @@ func openDocument(uri, text string) *document {
 	doc := &document{
 		uri: uri, lineOp: make(map[int]int), opLine: make(map[int]int),
 		lineLen: make(map[int]int), tokens: make(map[int]opTokens), tar: make(map[int]tarEntry),
+		encoding: make(map[string]encodingNode), encodingLine: make(map[int]string), literalDefs: make(map[int]string),
 	}
+	encodedLines := make(map[string]int)
 	scanner := bufio.NewScanner(strings.NewReader(text))
 	line := 0
 	for scanner.Scan() {
@@ -150,6 +169,9 @@ func openDocument(uri, text string) *document {
 				doc.tokens[id] = opTokenRanges(value, line)
 			}
 		}
+		if label := encodingLabel(value); label != "" {
+			encodedLines[label] = line
+		}
 		line++
 	}
 	if err := scanner.Err(); err != nil {
@@ -167,6 +189,17 @@ func openDocument(uri, text string) *document {
 		return doc
 	}
 	doc.trace, doc.loadErr = parse(data, doc.meta.Raw)
+	if doc.loadErr == nil && doc.meta.View == "trace" {
+		graph := buildEncodingGraph(doc.trace)
+		doc.literalDefs = graph.LiteralDefs
+		for _, node := range graph.Nodes {
+			if line, ok := encodedLines[node.Label]; ok {
+				node.Line = line
+				doc.encoding[node.Label] = node
+				doc.encodingLine[line] = node.Label
+			}
+		}
+	}
 	if doc.loadErr == nil && doc.meta.View == "tar" {
 		entries, ok := parseTarView(doc.trace.Output)
 		if !ok {
