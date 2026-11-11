@@ -72,8 +72,11 @@ func TestDynamicLiteralDefinitionWalksToRFC(t *testing.T) {
 		if node.Line != 0 || node.Symbol != symbol || node.Parent != lengthRunLabel(block.ID, repeated) {
 			t.Fatalf("repeat run slot %d node = %#v", slot, node)
 		}
-		if node.Text != lengthAssignmentText(run, repeated) {
-			t.Fatalf("repeat run slot %d text = %q, want %q", slot, node.Text, lengthAssignmentText(run, repeated))
+		if node.Text != lengthAssignmentText(run) {
+			t.Fatalf("repeat run slot %d text = %q, want %q", slot, node.Text, lengthAssignmentText(run))
+		}
+		if !strings.HasPrefix(node.Text, "# ") || strings.Contains(node.Text, "run ") || node.Text == "# bits" {
+			t.Fatalf("repeat run slot %d text = %q, want only a counted bit comment", slot, node.Text)
 		}
 	}
 	runNode := nodes[lengthRunLabel(block.ID, repeated)]

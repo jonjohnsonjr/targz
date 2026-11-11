@@ -275,6 +275,16 @@ func openDocument(uri, text string) *document {
 }
 
 func encodingTokenRanges(text string, line int) encodingTokens {
+	if strings.HasPrefix(text, "# ") {
+		start := len("# ")
+		end := strings.IndexAny(text[start:], " \t")
+		if end < 0 {
+			end = len(text)
+		} else {
+			end += start
+		}
+		return encodingTokens{Primary: byteRange(text, line, start, end)}
+	}
 	end := strings.IndexAny(text, " \t")
 	if end < 0 {
 		end = len(text)
