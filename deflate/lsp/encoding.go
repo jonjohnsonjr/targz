@@ -73,7 +73,6 @@ func buildEncodingGraph(trace *deflate.Trace) encodingGraph {
 				symbolSet.distance[code.Symbol] = struct{}{}
 			}
 		}
-		neededRuns := make(map[int]struct{})
 		for _, symbol := range sortedKeys(symbolSet.litlen) {
 			code, ok := huffmanCode(block.LiteralTable, symbol)
 			if !ok {
@@ -88,8 +87,7 @@ func buildEncodingGraph(trace *deflate.Trace) encodingGraph {
 				node.RFCStart, node.RFCEnd, node.RFCSelect = 654, 670, fixedRFCLine(symbol)
 			} else if block.Kind == deflate.DynamicBlock && block.Dynamic != nil {
 				if run := lengthRunForSlot(block.Dynamic, symbol); run >= 0 {
-					node.Parent = lengthRunLabel(block.ID, run)
-					neededRuns[run] = struct{}{}
+					node.Parent = lengthSlotLabel(block.ID, "litlen", symbol)
 				}
 			}
 			graph.Nodes = append(graph.Nodes, node)
@@ -108,8 +106,7 @@ func buildEncodingGraph(trace *deflate.Trace) encodingGraph {
 				node.RFCStart, node.RFCEnd, node.RFCSelect = 678, 688, 684
 			} else if block.Kind == deflate.DynamicBlock && block.Dynamic != nil {
 				if run := lengthRunForSlot(block.Dynamic, block.Dynamic.NumLiteralLengths+symbol); run >= 0 {
-					node.Parent = lengthRunLabel(block.ID, run)
-					neededRuns[run] = struct{}{}
+					node.Parent = lengthSlotLabel(block.ID, "distance", symbol)
 				}
 			}
 			graph.Nodes = append(graph.Nodes, node)
@@ -119,22 +116,27 @@ func buildEncodingGraph(trace *deflate.Trace) encodingGraph {
 			continue
 		}
 		header := block.Dynamic
-		neededCodeSymbols := make(map[int]struct{})
-		for _, runIndex := range sortedKeys(neededRuns) {
+		for slot := 0; slot < header.NumLiteralLengths+header.NumDistanceLengths; slot++ {
+			runIndex := lengthRunForSlot(header, slot)
+			if runIndex < 0 {
+				continue
+			}
 			run := header.LengthRuns[runIndex]
-			neededCodeSymbols[run.Symbol] = struct{}{}
+			alphabet, symbol := "litlen-lengths", slot
+			labelAlphabet := "litlen"
+			if slot >= header.NumLiteralLengths {
+				alphabet, symbol = "distance-lengths", slot-header.NumLiteralLengths
+				labelAlphabet = "distance"
+			}
 			graph.Nodes = append(graph.Nodes, encodingNode{
-				Label: lengthRunLabel(block.ID, runIndex), Parent: codeLengthLabel(block.ID, run.Symbol), BlockID: block.ID,
-				Text: fmt.Sprintf("%-15s # %s = %d",
-					mustBitString(trace, run.Input), slotRange(header, run.SlotsStart, run.SlotsEnd), run.Length),
+				Label: lengthSlotLabel(block.ID, labelAlphabet, symbol), Parent: codeLengthLabel(block.ID, run.Symbol),
+				Alphabet: alphabet, Symbol: symbol, BlockID: block.ID,
+				Text: lengthAssignmentText(trace, run),
 			})
 		}
 		neededFields := make(map[int]struct{})
-		for _, symbol := range sortedKeys(neededCodeSymbols) {
-			code, ok := huffmanCode(block.CodeTable, symbol)
-			if !ok {
-				continue
-			}
+		for _, code := range block.CodeTable.Codes {
+			symbol := code.Symbol
 			field := codeLengthField(header, symbol)
 			if field < 0 {
 				continue
@@ -142,6 +144,7 @@ func buildEncodingGraph(trace *deflate.Trace) encodingGraph {
 			neededFields[field] = struct{}{}
 			graph.Nodes = append(graph.Nodes, encodingNode{
 				Label: codeLengthLabel(block.ID, symbol), Parent: hclenLabel(block.ID, field), BlockID: block.ID,
+				Alphabet: "codelen", Symbol: symbol,
 				Text: fmt.Sprintf("%-15s # length %d", codeString(code), symbol),
 			})
 		}
@@ -208,25 +211,27 @@ func codeLengthField(header *deflate.DynamicHeader, symbol int) int {
 	return -1
 }
 
-func slotRange(header *deflate.DynamicHeader, start, end int) string {
-	nlit := header.NumLiteralLengths
-	switch {
-	case end == start+1 && end <= nlit:
-		return fmt.Sprintf("litlen[%d]", start)
-	case end == start+1 && start >= nlit:
-		return fmt.Sprintf("distance[%d]", start-nlit)
-	case end <= nlit:
-		return fmt.Sprintf("litlen[%d:%d]", start, end)
-	case start >= nlit:
-		return fmt.Sprintf("distance[%d:%d]", start-nlit, end-nlit)
-	default:
-		return fmt.Sprintf("litlen[%d:%d]+distance[0:%d]", start, nlit, end-nlit)
+func lengthAssignmentText(trace *deflate.Trace, run deflate.CodeLengthRun) string {
+	wire := mustBitString(trace, run.SymbolBits)
+	if run.ExtraBits.Len() != 0 {
+		wire += "·" + mustBitString(trace, run.ExtraBits)
 	}
+	unit := "bits"
+	if run.Length == 1 {
+		unit = "bit"
+	}
+	detail := fmt.Sprintf("%d %s", run.Length, unit)
+	if run.Repeat > 1 {
+		detail += fmt.Sprintf(" · repeat %d", run.Repeat)
+	}
+	return fmt.Sprintf("%-15s # %s", wire, detail)
 }
 
-func litlenLabel(block, symbol int) string     { return fmt.Sprintf("@b%d.litlen.%d", block, symbol) }
-func distanceLabel(block, symbol int) string   { return fmt.Sprintf("@b%d.distance.%d", block, symbol) }
-func lengthRunLabel(block, run int) string     { return fmt.Sprintf("@b%d.lengths.%d", block, run) }
+func litlenLabel(block, symbol int) string   { return fmt.Sprintf("@b%d.litlen.%d", block, symbol) }
+func distanceLabel(block, symbol int) string { return fmt.Sprintf("@b%d.distance.%d", block, symbol) }
+func lengthSlotLabel(block int, alphabet string, symbol int) string {
+	return fmt.Sprintf("@b%d.%s.lengths.%d", block, alphabet, symbol)
+}
 func codeLengthLabel(block, symbol int) string { return fmt.Sprintf("@b%d.codelen.%d", block, symbol) }
 func hclenLabel(block, field int) string       { return fmt.Sprintf("@b%d.hclen.%d", block, field) }
 

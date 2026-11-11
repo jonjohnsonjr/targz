@@ -43,6 +43,39 @@ func TestDynamicLiteralDefinitionWalksToRFC(t *testing.T) {
 	if dynamicBlock < 0 {
 		t.Fatalf("fixture blocks = %#v, want a dynamic block", trace.Blocks)
 	}
+	block := trace.Blocks[dynamicBlock]
+	repeated := -1
+	for i, run := range block.Dynamic.LengthRuns {
+		if run.Repeat > 1 {
+			repeated = i
+			break
+		}
+	}
+	if repeated < 0 {
+		t.Fatal("dynamic block has no repeated code-length run")
+	}
+	graph := buildEncodingGraph(trace)
+	nodes := make(map[string]encodingNode)
+	for _, node := range graph.Nodes {
+		nodes[node.Label] = node
+	}
+	run := block.Dynamic.LengthRuns[repeated]
+	for slot := run.SlotsStart; slot < run.SlotsEnd; slot++ {
+		alphabet, symbol := "litlen", slot
+		if slot >= block.Dynamic.NumLiteralLengths {
+			alphabet, symbol = "distance", slot-block.Dynamic.NumLiteralLengths
+		}
+		node, ok := nodes[lengthSlotLabel(block.ID, alphabet, symbol)]
+		if !ok {
+			t.Fatalf("repeat run slot %d has no expanded assignment", slot)
+		}
+		if node.Line != 0 || node.Symbol != symbol || node.Parent != codeLengthLabel(block.ID, run.Symbol) {
+			t.Fatalf("repeat run slot %d node = %#v", slot, node)
+		}
+		if node.Text != lengthAssignmentText(trace, run) {
+			t.Fatalf("repeat run slot %d text = %q, want %q", slot, node.Text, lengthAssignmentText(trace, run))
+		}
+	}
 	source := filepath.Join(t.TempDir(), "dynamic.deflate")
 	if err := os.WriteFile(source, compressed.Bytes(), 0o600); err != nil {
 		t.Fatal(err)
@@ -237,6 +270,27 @@ func TestMatchOperandsHaveIndependentDefinitions(t *testing.T) {
 	}
 	if distance[0].TargetSelectionRange.Start.Line != doc.trace.Ops[matchID].DistanceSymbol {
 		t.Fatalf("distance table line = %d, want symbol %d", distance[0].TargetSelectionRange.Start.Line, doc.trace.Ops[matchID].DistanceSymbol)
+	}
+	assignment := definitionLinksAtCharacter(t, s, length[0].TargetURI,
+		length[0].TargetSelectionRange.Start.Line, length[0].TargetSelectionRange.Start.Character)
+	if len(assignment) != 1 || !strings.Contains(assignment[0].TargetURI, "litlen-lengths.gzsym") {
+		t.Fatalf("length symbol parent = %#v, want expanded literal/length assignments", assignment)
+	}
+	if assignment[0].TargetSelectionRange.Start.Line != doc.trace.Ops[matchID].LengthSymbol {
+		t.Fatalf("length assignment line = %d, want symbol %d",
+			assignment[0].TargetSelectionRange.Start.Line, doc.trace.Ops[matchID].LengthSymbol)
+	}
+	assignmentDoc := s.docs[assignment[0].TargetURI]
+	assignmentNode := assignmentDoc.encoding[assignmentDoc.encodingLine[assignment[0].TargetSelectionRange.Start.Line]]
+	codeLength := definitionLinksAtCharacter(t, s, assignment[0].TargetURI,
+		assignment[0].TargetSelectionRange.Start.Line, assignment[0].TargetSelectionRange.Start.Character)
+	if len(codeLength) != 1 || !strings.Contains(codeLength[0].TargetURI, "codelen.gzsym") {
+		t.Fatalf("length assignment parent = %#v, want code-length symbol table", codeLength)
+	}
+	codeLengthDoc := s.docs[codeLength[0].TargetURI]
+	if label := codeLengthDoc.encodingLine[codeLength[0].TargetSelectionRange.Start.Line]; label != assignmentNode.Parent {
+		t.Fatalf("code-length table line %d = %q, want %q",
+			codeLength[0].TargetSelectionRange.Start.Line, label, assignmentNode.Parent)
 	}
 	for name, first := range map[string]locationLink{"length": length[0], "distance": distance[0]} {
 		link := first

@@ -256,10 +256,17 @@ func openDocument(uri, text string) *document {
 }
 
 func renderSymbolDocument(meta metadata, trace *deflate.Trace, block int, alphabet string) ([]byte, error) {
-	maxSymbol := 285
-	if alphabet == "distance" {
+	maxSymbol := -1
+	switch alphabet {
+	case "litlen", "litlen-lengths":
+		maxSymbol = 285
+	case "distance":
 		maxSymbol = 29
-	} else if alphabet != "litlen" {
+	case "distance-lengths":
+		maxSymbol = 31
+	case "codelen":
+		maxSymbol = 18
+	default:
 		return nil, fmt.Errorf("unknown Huffman alphabet %q", alphabet)
 	}
 	lines := make([]string, maxSymbol+1)
