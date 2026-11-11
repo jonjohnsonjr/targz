@@ -94,13 +94,19 @@ func TestCallHierarchyFollowsDeflateDependencies(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	definitions := result.([]location)
+	definitions := result.([]locationLink)
 	if len(definitions) != len(outgoing) {
 		t.Fatalf("definitions = %d, outgoing calls = %d", len(definitions), len(outgoing))
 	}
 	for i := range definitions {
-		if definitions[i].Range != outgoing[i].To.Range {
+		if definitions[i].TargetRange != outgoing[i].To.Range {
 			t.Fatalf("definition %d = %#v, outgoing target = %#v", i, definitions[i], outgoing[i].To)
+		}
+		if definitions[i].OriginSelectionRange != doc.tokens[matchID].Seed {
+			t.Fatalf("definition %d origin = %#v, want seed token %#v", i, definitions[i].OriginSelectionRange, doc.tokens[matchID].Seed)
+		}
+		if definitions[i].TargetSelectionRange != doc.tokens[outgoing[i].To.Data.Op].Output {
+			t.Fatalf("definition %d target selection = %#v, want output token %#v", i, definitions[i].TargetSelectionRange, doc.tokens[outgoing[i].To.Data.Op].Output)
 		}
 	}
 
@@ -130,16 +136,31 @@ func TestCallHierarchyFollowsDeflateDependencies(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	implementations := result.([]location)
+	implementations := result.([]locationLink)
 	if len(implementations) == 0 {
 		t.Fatal("match has no implementations")
 	}
 	for _, implementation := range implementations {
-		id := doc.lineOp[implementation.Range.Start.Line]
+		id := doc.lineOp[implementation.TargetRange.Start.Line]
 		kind := doc.trace.Ops[id].Kind
 		if kind != deflate.LiteralOp && kind != deflate.StoredOp {
 			t.Fatalf("implementation op %d is %s, want a terminal producer", id, kind)
 		}
+		if implementation.TargetSelectionRange != doc.tokens[id].Output {
+			t.Fatalf("implementation op %d target selection = %#v, want output token %#v", id, implementation.TargetSelectionRange, doc.tokens[id].Output)
+		}
+	}
+}
+
+func TestOpTokenRangesUseUTF16Positions(t *testing.T) {
+	line := "%1 literal 'é' out[0:1] bits[0.0:1.0]"
+	tokens := opTokenRanges(line, 7)
+	// The UTF-8 encoding of é occupies two bytes but one UTF-16 code unit.
+	if got, want := tokens.Output.Start.Character, len([]rune("%1 literal 'é' ")); got != want {
+		t.Fatalf("output token starts at UTF-16 character %d, want %d", got, want)
+	}
+	if tokens.Output.Start.Line != 7 || tokens.Output.End.Line != 7 {
+		t.Fatalf("output token line = %d:%d, want 7:7", tokens.Output.Start.Line, tokens.Output.End.Line)
 	}
 }
 

@@ -31,7 +31,13 @@ type document struct {
 	lineOp  map[int]int
 	opLine  map[int]int
 	lineLen map[int]int
+	tokens  map[int]opTokens
 	loadErr error
+}
+
+type opTokens struct {
+	Output lspRange
+	Seed   lspRange
 }
 
 // DisassembleFile parses source and renders the stable, one-operation-per-line
@@ -80,7 +86,10 @@ func Disassemble(source string, raw bool, trace *deflate.Trace) ([]byte, error) 
 }
 
 func openDocument(uri, text string) *document {
-	doc := &document{uri: uri, lineOp: make(map[int]int), opLine: make(map[int]int), lineLen: make(map[int]int)}
+	doc := &document{
+		uri: uri, lineOp: make(map[int]int), opLine: make(map[int]int),
+		lineLen: make(map[int]int), tokens: make(map[int]opTokens),
+	}
 	scanner := bufio.NewScanner(strings.NewReader(text))
 	line := 0
 	for scanner.Scan() {
@@ -105,6 +114,7 @@ func openDocument(uri, text string) *document {
 			if err == nil {
 				doc.lineOp[line] = id
 				doc.opLine[id] = line
+				doc.tokens[id] = opTokenRanges(value, line)
 			}
 		}
 		line++
@@ -120,6 +130,32 @@ func openDocument(uri, text string) *document {
 	}
 	doc.trace, doc.loadErr = parse(data, doc.meta.Raw)
 	return doc
+}
+
+func opTokenRanges(line string, lineNumber int) opTokens {
+	return opTokens{
+		Output: tokenRange(line, lineNumber, "out["),
+		Seed:   tokenRange(line, lineNumber, "seed["),
+	}
+}
+
+func tokenRange(line string, lineNumber int, prefix string) lspRange {
+	start := strings.Index(line, prefix)
+	if start < 0 {
+		return lspRange{}
+	}
+	end := strings.IndexByte(line[start:], ']')
+	if end < 0 {
+		return lspRange{}
+	}
+	end += start + 1
+	// LSP character offsets count UTF-16 code units rather than bytes.
+	startCharacter := len(utf16.Encode([]rune(line[:start])))
+	endCharacter := len(utf16.Encode([]rune(line[:end])))
+	return lspRange{
+		Start: position{Line: lineNumber, Character: startCharacter},
+		End:   position{Line: lineNumber, Character: endCharacter},
+	}
 }
 
 func parse(data []byte, raw bool) (*deflate.Trace, error) {

@@ -63,11 +63,15 @@ The server reparses that source when the document opens, so it can answer
 also maps the editor's most important navigation commands onto provenance:
 
 - **Go to Definition** jumps from a match to the operations which immediately
-  produce its normalized source seed.
+  produce its normalized source seed. Definition results are `LocationLink`s:
+  the origin selects the match's exact `seed[...]` token, the destination
+  selects the producer's `out[...]` token, and the complete instruction remains
+  available as target context.
 - **Find References** finds later matches which directly consume this
   operation's output.
 - **Go to Implementation** follows the dependency graph through matches to the
-  literal or stored operations which ultimately introduced the bytes.
+  literal or stored operations which ultimately introduced the bytes. These
+  results use the same token-precise links.
 
 Raw streams can be generated with `disassemble -raw`.
 

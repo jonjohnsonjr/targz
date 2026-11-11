@@ -137,14 +137,14 @@ func (s *Server) handle(method string, raw json.RawMessage) (any, error) {
 		}
 		seed, ok := op.Seed()
 		if !ok {
-			return []location{}, nil
+			return []locationLink{}, nil
 		}
 		productions := doc.trace.Producers(seed)
-		locations := make([]location, 0, len(productions))
+		links := make([]locationLink, 0, len(productions))
 		for _, production := range productions {
-			locations = append(locations, doc.location(production.Op.ID))
+			links = append(links, doc.link(op.ID, production.Op.ID))
 		}
-		return locations, nil
+		return links, nil
 	case "textDocument/references":
 		doc, op, err := s.operationAt(raw)
 		if err != nil || op == nil {
@@ -176,11 +176,11 @@ func (s *Server) handle(method string, raw json.RawMessage) (any, error) {
 		if err != nil {
 			return nil, err
 		}
-		locations := make([]location, 0, len(ids))
+		links := make([]locationLink, 0, len(ids))
 		for _, id := range ids {
-			locations = append(locations, doc.location(id))
+			links = append(links, doc.link(op.ID, id))
 		}
-		return locations, nil
+		return links, nil
 	case "callHierarchy/incomingCalls":
 		doc, op, err := s.operationFromItem(raw)
 		if err != nil {
@@ -240,6 +240,13 @@ type lspRange struct {
 type location struct {
 	URI   string   `json:"uri"`
 	Range lspRange `json:"range"`
+}
+
+type locationLink struct {
+	OriginSelectionRange lspRange `json:"originSelectionRange,omitempty"`
+	TargetURI            string   `json:"targetUri"`
+	TargetRange          lspRange `json:"targetRange"`
+	TargetSelectionRange lspRange `json:"targetSelectionRange"`
 }
 
 type itemData struct {
@@ -338,6 +345,23 @@ func (d *document) opRange(id int) lspRange {
 
 func (d *document) location(id int) location {
 	return location{URI: d.uri, Range: d.opRange(id)}
+}
+
+func (d *document) link(originID, targetID int) locationLink {
+	origin := d.tokens[originID].Seed
+	if origin == (lspRange{}) {
+		origin = d.opRange(originID)
+	}
+	target := d.tokens[targetID].Output
+	if target == (lspRange{}) {
+		target = d.opRange(targetID)
+	}
+	return locationLink{
+		OriginSelectionRange: origin,
+		TargetURI:            d.uri,
+		TargetRange:          d.opRange(targetID),
+		TargetSelectionRange: target,
+	}
 }
 
 // implementations returns the concrete literal and stored operations from
