@@ -256,6 +256,7 @@ func openDocument(uri, text string) *document {
 }
 
 func renderSymbolDocument(meta metadata, trace *deflate.Trace, block int, alphabet string) ([]byte, error) {
+	graph := buildEncodingGraph(trace)
 	maxSymbol := -1
 	switch alphabet {
 	case "litlen", "litlen-lengths":
@@ -266,11 +267,20 @@ func renderSymbolDocument(meta metadata, trace *deflate.Trace, block int, alphab
 		maxSymbol = 31
 	case "codelen":
 		maxSymbol = 18
+	case "length-program":
+		for _, node := range graph.Nodes {
+			if node.BlockID == block && node.Alphabet == alphabet && node.Symbol > maxSymbol {
+				maxSymbol = node.Symbol
+			}
+		}
 	default:
 		return nil, fmt.Errorf("unknown Huffman alphabet %q", alphabet)
 	}
+	if maxSymbol < 0 {
+		return nil, fmt.Errorf("empty %s table for block %d", alphabet, block)
+	}
 	lines := make([]string, maxSymbol+1)
-	for _, node := range buildEncodingGraph(trace).Nodes {
+	for _, node := range graph.Nodes {
 		if node.BlockID == block && node.Alphabet == alphabet && node.Symbol <= maxSymbol {
 			lines[node.Symbol] = node.Text
 		}

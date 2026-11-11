@@ -69,12 +69,17 @@ func TestDynamicLiteralDefinitionWalksToRFC(t *testing.T) {
 		if !ok {
 			t.Fatalf("repeat run slot %d has no expanded assignment", slot)
 		}
-		if node.Line != 0 || node.Symbol != symbol || node.Parent != codeLengthLabel(block.ID, run.Symbol) {
+		if node.Line != 0 || node.Symbol != symbol || node.Parent != lengthRunLabel(block.ID, repeated) {
 			t.Fatalf("repeat run slot %d node = %#v", slot, node)
 		}
-		if node.Text != lengthAssignmentText(trace, run) {
-			t.Fatalf("repeat run slot %d text = %q, want %q", slot, node.Text, lengthAssignmentText(trace, run))
+		if node.Text != lengthAssignmentText(run, repeated) {
+			t.Fatalf("repeat run slot %d text = %q, want %q", slot, node.Text, lengthAssignmentText(run, repeated))
 		}
+	}
+	runNode := nodes[lengthRunLabel(block.ID, repeated)]
+	if runNode.Symbol != repeated || runNode.Parent != codeLengthLabel(block.ID, run.Symbol) ||
+		runNode.Text != lengthRunText(trace, block.Dynamic, run) {
+		t.Fatalf("repeat run node = %#v", runNode)
 	}
 	source := filepath.Join(t.TempDir(), "dynamic.deflate")
 	if err := os.WriteFile(source, compressed.Bytes(), 0o600); err != nil {
@@ -92,6 +97,26 @@ func TestDynamicLiteralDefinitionWalksToRFC(t *testing.T) {
 	if doc.loadErr != nil {
 		t.Fatal(doc.loadErr)
 	}
+	programDoc, err := s.symbolDocument(doc, doc.encoding[lengthRunLabel(block.ID, repeated)])
+	if err != nil {
+		t.Fatal(err)
+	}
+	referenceParams, err := json.Marshal(map[string]any{
+		"textDocument": map[string]any{"uri": programDoc.uri},
+		"position":     map[string]any{"line": repeated, "character": 1},
+		"context":      map[string]any{"includeDeclaration": false},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	referenceResult, err := s.handle("textDocument/references", referenceParams)
+	if err != nil {
+		t.Fatal(err)
+	}
+	references := referenceResult.([]location)
+	if len(references) != run.Repeat {
+		t.Fatalf("length run references = %d, want %d assigned slots", len(references), run.Repeat)
+	}
 	literalID := -1
 	for _, op := range doc.trace.Ops {
 		if op.BlockID == dynamicBlock && op.Kind == deflate.LiteralOp {
@@ -104,7 +129,7 @@ func TestDynamicLiteralDefinitionWalksToRFC(t *testing.T) {
 	}
 
 	line := doc.opLine[literalID]
-	wantLabels := []string{".litlen.", ".lengths.", ".codelen.", ".hclen."}
+	wantLabels := []string{".litlen.", ".lengths.", ".length-program.", ".codelen.", ".hclen."}
 	currentURI := uri
 	for _, fragment := range wantLabels {
 		links := definitionLinksAt(t, s, currentURI, line)
@@ -282,15 +307,26 @@ func TestMatchOperandsHaveIndependentDefinitions(t *testing.T) {
 	}
 	assignmentDoc := s.docs[assignment[0].TargetURI]
 	assignmentNode := assignmentDoc.encoding[assignmentDoc.encodingLine[assignment[0].TargetSelectionRange.Start.Line]]
-	codeLength := definitionLinksAtCharacter(t, s, assignment[0].TargetURI,
+	program := definitionLinksAtCharacter(t, s, assignment[0].TargetURI,
 		assignment[0].TargetSelectionRange.Start.Line, assignment[0].TargetSelectionRange.Start.Character)
+	if len(program) != 1 || !strings.Contains(program[0].TargetURI, "length-program.gzsym") {
+		t.Fatalf("length assignment parent = %#v, want compact length program", program)
+	}
+	programDoc := s.docs[program[0].TargetURI]
+	if label := programDoc.encodingLine[program[0].TargetSelectionRange.Start.Line]; label != assignmentNode.Parent {
+		t.Fatalf("length program line %d = %q, want %q",
+			program[0].TargetSelectionRange.Start.Line, label, assignmentNode.Parent)
+	}
+	programNode := programDoc.encoding[assignmentNode.Parent]
+	codeLength := definitionLinksAtCharacter(t, s, program[0].TargetURI,
+		program[0].TargetSelectionRange.Start.Line, program[0].TargetSelectionRange.Start.Character)
 	if len(codeLength) != 1 || !strings.Contains(codeLength[0].TargetURI, "codelen.gzsym") {
-		t.Fatalf("length assignment parent = %#v, want code-length symbol table", codeLength)
+		t.Fatalf("length program parent = %#v, want code-length symbol table", codeLength)
 	}
 	codeLengthDoc := s.docs[codeLength[0].TargetURI]
-	if label := codeLengthDoc.encodingLine[codeLength[0].TargetSelectionRange.Start.Line]; label != assignmentNode.Parent {
+	if label := codeLengthDoc.encodingLine[codeLength[0].TargetSelectionRange.Start.Line]; label != programNode.Parent {
 		t.Fatalf("code-length table line %d = %q, want %q",
-			codeLength[0].TargetSelectionRange.Start.Line, label, assignmentNode.Parent)
+			codeLength[0].TargetSelectionRange.Start.Line, label, programNode.Parent)
 	}
 	for name, first := range map[string]locationLink{"length": length[0], "distance": distance[0]} {
 		link := first

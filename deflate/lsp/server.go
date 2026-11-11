@@ -304,16 +304,21 @@ func (s *Server) handle(method string, raw json.RawMessage) (any, error) {
 		}
 		return links, nil
 	case "textDocument/references":
-		doc, op, err := s.operationAt(raw)
-		if err != nil || op == nil {
-			return nil, err
-		}
 		var params struct {
 			Context struct {
 				IncludeDeclaration bool `json:"includeDeclaration"`
 			} `json:"context"`
 		}
 		if err := json.Unmarshal(raw, &params); err != nil {
+			return nil, err
+		}
+		if doc, node, ok, err := s.encodingAt(raw); err != nil {
+			return nil, err
+		} else if ok {
+			return s.encodingReferences(doc, node, params.Context.IncludeDeclaration)
+		}
+		doc, op, err := s.operationAt(raw)
+		if err != nil || op == nil {
 			return nil, err
 		}
 		uses := doc.trace.Uses(op.Output)
@@ -833,6 +838,34 @@ func (s *Server) encodingDefinition(d *document, node encodingNode) (locationLin
 			End:   position{Line: node.RFCSelect + 1},
 		},
 	}, true, nil
+}
+
+func (s *Server) encodingReferences(d *document, node encodingNode, includeDeclaration bool) ([]location, error) {
+	traceDoc := d
+	if d.meta.TraceURI != "" {
+		var ok bool
+		traceDoc, ok = s.docs[d.meta.TraceURI]
+		if !ok {
+			return nil, fmt.Errorf("trace document is not open: %s", d.meta.TraceURI)
+		}
+	}
+	locations := make([]location, 0)
+	if includeDeclaration {
+		locations = append(locations, location{URI: d.uri, Range: d.encodingSelection(node)})
+	}
+	for _, child := range buildEncodingGraph(traceDoc.trace).Nodes {
+		if child.Parent != node.Label {
+			continue
+		}
+		link, ok, err := s.encodingLink(traceDoc, lspRange{}, child.Label)
+		if err != nil {
+			return nil, err
+		}
+		if ok {
+			locations = append(locations, location{URI: link.TargetURI, Range: link.TargetSelectionRange})
+		}
+	}
+	return locations, nil
 }
 
 func (s *Server) symbolDocument(traceDoc *document, node encodingNode) (*document, error) {

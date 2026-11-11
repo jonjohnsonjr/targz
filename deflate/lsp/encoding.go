@@ -129,9 +129,16 @@ func buildEncodingGraph(trace *deflate.Trace) encodingGraph {
 				labelAlphabet = "distance"
 			}
 			graph.Nodes = append(graph.Nodes, encodingNode{
-				Label: lengthSlotLabel(block.ID, labelAlphabet, symbol), Parent: codeLengthLabel(block.ID, run.Symbol),
+				Label: lengthSlotLabel(block.ID, labelAlphabet, symbol), Parent: lengthRunLabel(block.ID, runIndex),
 				Alphabet: alphabet, Symbol: symbol, BlockID: block.ID,
-				Text: lengthAssignmentText(trace, run),
+				Text: lengthAssignmentText(run, runIndex),
+			})
+		}
+		for runIndex, run := range header.LengthRuns {
+			graph.Nodes = append(graph.Nodes, encodingNode{
+				Label: lengthRunLabel(block.ID, runIndex), Parent: codeLengthLabel(block.ID, run.Symbol),
+				Alphabet: "length-program", Symbol: runIndex, BlockID: block.ID,
+				Text: lengthRunText(trace, header, run),
 			})
 		}
 		neededFields := make(map[int]struct{})
@@ -211,7 +218,15 @@ func codeLengthField(header *deflate.DynamicHeader, symbol int) int {
 	return -1
 }
 
-func lengthAssignmentText(trace *deflate.Trace, run deflate.CodeLengthRun) string {
+func lengthAssignmentText(run deflate.CodeLengthRun, runIndex int) string {
+	unit := "bits"
+	if run.Length == 1 {
+		unit = "bit"
+	}
+	return fmt.Sprintf("%-15d # %s · run %d", run.Length, unit, runIndex)
+}
+
+func lengthRunText(trace *deflate.Trace, header *deflate.DynamicHeader, run deflate.CodeLengthRun) string {
 	wire := mustBitString(trace, run.SymbolBits)
 	if run.ExtraBits.Len() != 0 {
 		wire += "·" + mustBitString(trace, run.ExtraBits)
@@ -220,11 +235,24 @@ func lengthAssignmentText(trace *deflate.Trace, run deflate.CodeLengthRun) strin
 	if run.Length == 1 {
 		unit = "bit"
 	}
-	detail := fmt.Sprintf("%d %s", run.Length, unit)
-	if run.Repeat > 1 {
-		detail += fmt.Sprintf(" · repeat %d", run.Repeat)
+	return fmt.Sprintf("%-15s # %d %s → %s", wire, run.Length, unit,
+		slotRange(header, run.SlotsStart, run.SlotsEnd))
+}
+
+func slotRange(header *deflate.DynamicHeader, start, end int) string {
+	nlit := header.NumLiteralLengths
+	switch {
+	case end == start+1 && end <= nlit:
+		return fmt.Sprintf("litlen[%d]", start)
+	case end == start+1 && start >= nlit:
+		return fmt.Sprintf("distance[%d]", start-nlit)
+	case end <= nlit:
+		return fmt.Sprintf("litlen[%d:%d]", start, end)
+	case start >= nlit:
+		return fmt.Sprintf("distance[%d:%d]", start-nlit, end-nlit)
+	default:
+		return fmt.Sprintf("litlen[%d:%d] + distance[0:%d]", start, nlit, end-nlit)
 	}
-	return fmt.Sprintf("%-15s # %s", wire, detail)
 }
 
 func litlenLabel(block, symbol int) string   { return fmt.Sprintf("@b%d.litlen.%d", block, symbol) }
@@ -232,6 +260,7 @@ func distanceLabel(block, symbol int) string { return fmt.Sprintf("@b%d.distance
 func lengthSlotLabel(block int, alphabet string, symbol int) string {
 	return fmt.Sprintf("@b%d.%s.lengths.%d", block, alphabet, symbol)
 }
+func lengthRunLabel(block, run int) string     { return fmt.Sprintf("@b%d.length-program.%d", block, run) }
 func codeLengthLabel(block, symbol int) string { return fmt.Sprintf("@b%d.codelen.%d", block, symbol) }
 func hclenLabel(block, field int) string       { return fmt.Sprintf("@b%d.hclen.%d", block, field) }
 
