@@ -823,20 +823,15 @@ func (s *Server) encodingDefinition(d *document, node encodingNode) (locationLin
 	if node.Parent != "" {
 		return s.encodingLink(d, origin, node.Parent)
 	}
-	if d.meta.RFC == "" || node.RFCEnd <= node.RFCStart {
+	anchor, ok := rfcAnchors[node.RFCAnchor]
+	if d.meta.RFC == "" || !ok {
 		return locationLink{}, false, nil
 	}
 	return locationLink{
 		OriginSelectionRange: origin,
 		TargetURI:            fileURI(d.meta.RFC),
-		TargetRange: lspRange{
-			Start: position{Line: node.RFCStart},
-			End:   position{Line: node.RFCEnd},
-		},
-		TargetSelectionRange: lspRange{
-			Start: position{Line: node.RFCSelect},
-			End:   position{Line: node.RFCSelect + 1},
-		},
+		TargetRange:          anchor.TargetRange,
+		TargetSelectionRange: anchor.Selection,
 	}, true, nil
 }
 

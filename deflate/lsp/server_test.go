@@ -147,12 +147,14 @@ func TestDynamicLiteralDefinitionWalksToRFC(t *testing.T) {
 			t.Fatalf("definition target = %q, want fragment %q", label, fragment)
 		}
 	}
+	hclenNode := s.docs[currentURI].encoding[s.docs[currentURI].encodingLine[line]]
+	wantRFC := rfcAnchors[hclenNode.RFCAnchor]
 	links := definitionLinksAt(t, s, currentURI, line)
 	if len(links) != 1 || !strings.HasSuffix(links[0].TargetURI, "/doc/rfc1951.txt") {
 		t.Fatalf("HCLEN definition = %#v, want vendored RFC", links)
 	}
-	if links[0].TargetSelectionRange.Start.Line != 734 {
-		t.Fatalf("RFC selection line = %d, want 734", links[0].TargetSelectionRange.Start.Line)
+	if links[0].TargetSelectionRange != wantRFC.Selection {
+		t.Fatalf("RFC selection = %#v, want exact HCLEN token %#v", links[0].TargetSelectionRange, wantRFC.Selection)
 	}
 }
 
@@ -213,6 +215,9 @@ func TestFixedLiteralDefinitionJumpsToRFCTable(t *testing.T) {
 	}
 	if root[0].TargetSelectionRange.Start.Line != 662 {
 		t.Fatalf("fixed RFC selection line = %d, want 662", root[0].TargetSelectionRange.Start.Line)
+	}
+	if root[0].TargetSelectionRange.Start.Character != 21 || root[0].TargetSelectionRange.End.Character != 28 {
+		t.Fatalf("fixed RFC selection = %#v, want exact 0 - 143 range", root[0].TargetSelectionRange)
 	}
 }
 
@@ -341,6 +346,13 @@ func TestMatchOperandsHaveIndependentDefinitions(t *testing.T) {
 	}
 	if hclenDoc.encoding[codeLengthNode.Parent].Symbol != hclenLine {
 		t.Fatalf("HCLEN target line %d is not its transmission index", hclenLine)
+	}
+	rfc := definitionLinksAtCharacter(t, s, hclen[0].TargetURI,
+		hclenLine, hclen[0].TargetSelectionRange.Start.Character)
+	if len(rfc) != 1 || rfc[0].TargetSelectionRange != (lspRange{
+		Start: position{Line: 736, Character: 65}, End: position{Line: 736, Character: 66},
+	}) {
+		t.Fatalf("HCLEN[17] RFC definition = %#v, want exact symbol 1 token", rfc)
 	}
 	for name, first := range map[string]locationLink{"length": length[0], "distance": distance[0]} {
 		link := first

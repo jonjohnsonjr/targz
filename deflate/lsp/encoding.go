@@ -17,9 +17,7 @@ type encodingNode struct {
 	Alphabet  string
 	Symbol    int
 	BlockID   int
-	RFCStart  int
-	RFCEnd    int
-	RFCSelect int
+	RFCAnchor string
 	Line      int
 }
 
@@ -84,7 +82,7 @@ func buildEncodingGraph(trace *deflate.Trace) encodingGraph {
 				Text: fmt.Sprintf("%-15s # %s", codeString(code), litlenMeaning(symbol)),
 			}
 			if block.Kind == deflate.FixedBlock {
-				node.RFCStart, node.RFCEnd, node.RFCSelect = 654, 670, fixedRFCLine(symbol)
+				node.RFCAnchor = fixedLiteralRFCAnchor(symbol)
 			} else if block.Kind == deflate.DynamicBlock && block.Dynamic != nil {
 				if run := lengthRunForSlot(block.Dynamic, symbol); run >= 0 {
 					node.Parent = lengthSlotLabel(block.ID, "litlen", symbol)
@@ -103,7 +101,7 @@ func buildEncodingGraph(trace *deflate.Trace) encodingGraph {
 				Text: fmt.Sprintf("%-15s # %s", codeString(code), distanceMeaning(symbol)),
 			}
 			if block.Kind == deflate.FixedBlock {
-				node.RFCStart, node.RFCEnd, node.RFCSelect = 678, 688, 684
+				node.RFCAnchor = "fixed-distance"
 			} else if block.Kind == deflate.DynamicBlock && block.Dynamic != nil {
 				if run := lengthRunForSlot(block.Dynamic, block.Dynamic.NumLiteralLengths+symbol); run >= 0 {
 					node.Parent = lengthSlotLabel(block.ID, "distance", symbol)
@@ -158,8 +156,8 @@ func buildEncodingGraph(trace *deflate.Trace) encodingGraph {
 			graph.Nodes = append(graph.Nodes, encodingNode{
 				Label: hclenLabel(block.ID, fieldIndex), BlockID: block.ID,
 				Alphabet: "hclen", Symbol: fieldIndex,
-				Text:     fmt.Sprintf("%-15s # symbol %d: %d bits", wire, field.Symbol, field.Length),
-				RFCStart: 689, RFCEnd: 750, RFCSelect: 734,
+				Text:      fmt.Sprintf("%-15s # symbol %d: %d bits", wire, field.Symbol, field.Length),
+				RFCAnchor: hclenRFCAnchor(fieldIndex),
 			})
 		}
 	}
@@ -260,19 +258,6 @@ func lengthSlotLabel(block int, alphabet string, symbol int) string {
 func lengthRunLabel(block, run int) string     { return fmt.Sprintf("@b%d.length-program.%d", block, run) }
 func codeLengthLabel(block, symbol int) string { return fmt.Sprintf("@b%d.codelen.%d", block, symbol) }
 func hclenLabel(block, field int) string       { return fmt.Sprintf("@b%d.hclen.%d", block, field) }
-
-func fixedRFCLine(symbol int) int {
-	switch {
-	case symbol <= 143:
-		return 662
-	case symbol <= 255:
-		return 664
-	case symbol <= 279:
-		return 666
-	default:
-		return 668
-	}
-}
 
 var lengthBases = [...]int{
 	3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 15, 17, 19, 23, 27, 31,

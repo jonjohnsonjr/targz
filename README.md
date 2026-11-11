@@ -144,6 +144,12 @@ Include `gzpls-symbols` in the `filetypes` for the `gzpls` LSP configuration.
 The generated files live only for the lifetime of the language server. The
 trace, tar manifest, and RFC buffers retain their ordinary line-number display.
 
+RFC destinations use a static semantic anchor index. The link retains the
+governing paragraph as context while selecting the exact token: an HCLEN field
+lands on its symbol in the §3.2.7 transmission-order list, and fixed-Huffman
+symbols land on their precise literal range or the `Distance codes 0-31`
+phrase in §3.2.6.
+
 ### gsip
 
 `gsip` is very similar to [`compress/gzip`](https://pkg.go.dev/compress/gzip) but for an `io.ReaderAt` instead of an `io.Reader`.
