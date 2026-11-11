@@ -110,6 +110,19 @@ func TestFixedLiteralDefinitionJumpsToRFCTable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if bytes.Contains(listing, []byte("canonical=")) {
+		t.Fatalf("trace exposes verbose implementation detail:\n%s", listing)
+	}
+	wantLines := []string{
+		"block 0 bits[0.0:2.2] # fixed Huffman",
+		"%0  01110001        # literal 'A'    out[0:1]",
+		"@b0.litlen.65      01110001        # lit/len 65 = 'A' (8 bits)",
+	}
+	for _, want := range wantLines {
+		if !bytes.Contains(listing, []byte(want)) {
+			t.Fatalf("compact trace missing %q:\n%s", want, listing)
+		}
+	}
 
 	const uri = "file:///fixed.deflate"
 	s := NewServer(bytes.NewReader(nil), &bytes.Buffer{})

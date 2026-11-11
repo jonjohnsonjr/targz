@@ -103,31 +103,29 @@ func disassembleView(source string, raw bool, trace *deflate.Trace, requested st
 	}
 	var out bytes.Buffer
 	fmt.Fprintf(&out, "%s%s\n", headerPrefix, meta)
-	fmt.Fprintf(&out, "# %d output bytes, %d blocks, %d operations\n\n", len(trace.Output), len(trace.Blocks), len(trace.Ops))
+	fmt.Fprintf(&out, "output %d bytes, %d blocks, %d ops # decoded stream\n\n", len(trace.Output), len(trace.Blocks), len(trace.Ops))
 	graph := buildEncodingGraph(trace)
 	for _, block := range trace.Blocks {
-		fmt.Fprintf(&out, "# block %d · %s Huffman · bits[%s:%s]\n", block.ID, block.Kind, block.Input.Start, block.Input.End)
+		fmt.Fprintf(&out, "block %d bits[%s:%s] # %s Huffman\n", block.ID, block.Input.Start, block.Input.End, block.Kind)
+		for _, op := range trace.Ops[block.FirstOp : block.FirstOp+block.NumOps] {
+			wire, _ := trace.BitString(op.Input)
+			switch op.Kind {
+			case deflate.LiteralOp:
+				fmt.Fprintf(&out, "%%%d  %-15s # literal %-6s out[%d:%d]\n",
+					op.ID, wire, quoteByte(op.Literal), op.Output.Start, op.Output.End)
+			case deflate.StoredOp:
+				fmt.Fprintf(&out, "%%%d  stored %d bytes # out[%d:%d]\n",
+					op.ID, op.Length, op.Output.Start, op.Output.End)
+			case deflate.MatchOp:
+				seed, _ := op.Seed()
+				fmt.Fprintf(&out, "%%%d  %-15s # copy %d bytes, %d back out[%d:%d] seed[%d:%d]\n",
+					op.ID, wire, op.Length, op.Distance, op.Output.Start, op.Output.End, seed.Start, seed.End)
+			}
+		}
+		out.WriteString("\n# definitions used by this block\n")
 		for _, node := range graph.Nodes {
 			if node.BlockID == block.ID {
 				fmt.Fprintf(&out, "%-18s %s\n", node.Label, node.Text)
-			}
-		}
-		if len(graph.Nodes) != 0 {
-			out.WriteByte('\n')
-		}
-		for _, op := range trace.Ops[block.FirstOp : block.FirstOp+block.NumOps] {
-			switch op.Kind {
-			case deflate.LiteralOp:
-				fmt.Fprintf(&out, "%%%d  literal %-6s out[%d:%d] bits[%s:%s]\n",
-					op.ID, quoteByte(op.Literal), op.Output.Start, op.Output.End, op.Input.Start, op.Input.End)
-			case deflate.StoredOp:
-				fmt.Fprintf(&out, "%%%d  stored  len=%d out[%d:%d] bits[%s:%s]\n",
-					op.ID, op.Length, op.Output.Start, op.Output.End, op.Input.Start, op.Input.End)
-			case deflate.MatchOp:
-				seed, _ := op.Seed()
-				fmt.Fprintf(&out, "%%%d  match   len=%d dist=%d out[%d:%d] seed[%d:%d] bits[%s:%s]\n",
-					op.ID, op.Length, op.Distance, op.Output.Start, op.Output.End,
-					seed.Start, seed.End, op.Input.Start, op.Input.End)
 			}
 		}
 		out.WriteByte('\n')

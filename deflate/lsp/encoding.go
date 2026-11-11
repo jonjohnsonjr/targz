@@ -55,7 +55,7 @@ func buildEncodingGraph(trace *deflate.Trace) encodingGraph {
 			}
 			node := encodingNode{
 				Label: litlenLabel(block.ID, symbol), BlockID: block.ID,
-				Text: fmt.Sprintf("litlen[%d] %-6s len=%d canonical=%s", symbol, quoteByte(byte(symbol)), code.Bits, codeString(code)),
+				Text: fmt.Sprintf("%-15s # lit/len %d = %s (%d bits)", codeString(code), symbol, quoteByte(byte(symbol)), code.Bits),
 			}
 			if block.Kind == deflate.FixedBlock {
 				node.RFCStart, node.RFCEnd, node.RFCSelect = 654, 670, fixedRFCLine(symbol)
@@ -78,8 +78,8 @@ func buildEncodingGraph(trace *deflate.Trace) encodingGraph {
 			neededCodeSymbols[run.Symbol] = struct{}{}
 			graph.Nodes = append(graph.Nodes, encodingNode{
 				Label: lengthRunLabel(block.ID, runIndex), Parent: codeLengthLabel(block.ID, run.Symbol), BlockID: block.ID,
-				Text: fmt.Sprintf("assign %-25s len=%d via codelen[%d] repeat=%d bits[%s:%s]",
-					slotRange(header, run.SlotsStart, run.SlotsEnd), run.Length, run.Symbol, run.Repeat, run.Input.Start, run.Input.End),
+				Text: fmt.Sprintf("%-15s # %s gets length %d via symbol %d × %d",
+					mustBitString(trace, run.Input), slotRange(header, run.SlotsStart, run.SlotsEnd), run.Length, run.Symbol, run.Repeat),
 			})
 		}
 		neededFields := make(map[int]struct{})
@@ -95,7 +95,7 @@ func buildEncodingGraph(trace *deflate.Trace) encodingGraph {
 			neededFields[field] = struct{}{}
 			graph.Nodes = append(graph.Nodes, encodingNode{
 				Label: codeLengthLabel(block.ID, symbol), Parent: hclenLabel(block.ID, field), BlockID: block.ID,
-				Text: fmt.Sprintf("codelen[%d] len=%d canonical=%s", symbol, code.Bits, codeString(code)),
+				Text: fmt.Sprintf("%-15s # code-length symbol %d (%d bits)", codeString(code), symbol, code.Bits),
 			})
 		}
 		for _, fieldIndex := range sortedKeys(neededFields) {
@@ -103,13 +103,18 @@ func buildEncodingGraph(trace *deflate.Trace) encodingGraph {
 			wire, _ := trace.BitString(field.Input)
 			graph.Nodes = append(graph.Nodes, encodingNode{
 				Label: hclenLabel(block.ID, fieldIndex), BlockID: block.ID,
-				Text: fmt.Sprintf("HCLEN[%d] symbol=%d len=%d wire=%s bits[%s:%s]",
-					fieldIndex, field.Symbol, field.Length, wire, field.Input.Start, field.Input.End),
+				Text: fmt.Sprintf("%-15s # HCLEN[%d]: symbol %d uses %d bits",
+					wire, fieldIndex, field.Symbol, field.Length),
 				RFCStart: 689, RFCEnd: 750, RFCSelect: 734,
 			})
 		}
 	}
 	return graph
+}
+
+func mustBitString(trace *deflate.Trace, span deflate.BitRange) string {
+	wire, _ := trace.BitString(span)
+	return wire
 }
 
 func sortedKeys[V any](values map[int]V) []int {
