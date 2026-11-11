@@ -162,6 +162,102 @@ func TestOpTokenRangesUseUTF16Positions(t *testing.T) {
 	if tokens.Output.Start.Line != 7 || tokens.Output.End.Line != 7 {
 		t.Fatalf("output token line = %d:%d, want 7:7", tokens.Output.Start.Line, tokens.Output.End.Line)
 	}
+	if tokens.Literal.Start.Character >= tokens.Literal.End.Character {
+		t.Fatalf("literal token is empty: %#v", tokens.Literal)
+	}
+}
+
+func TestRenamePreparesLiteralAndReportsDryRunImpact(t *testing.T) {
+	source := filepath.Join(t.TempDir(), "rename.gz")
+	var compressed bytes.Buffer
+	w := gzip.NewWriter(&compressed)
+	if _, err := w.Write(bytes.Repeat([]byte("abc"), 400)); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(source, compressed.Bytes(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	listing, err := DisassembleFile(source, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	const uri = "file:///rename.gz.deflate"
+	var output bytes.Buffer
+	s := NewServer(bytes.NewReader(nil), &output)
+	s.docs[uri] = openDocument(uri, string(listing))
+	doc := s.docs[uri]
+	var literal deflate.Op
+	found := false
+	for _, op := range doc.trace.Ops {
+		if op.Kind == deflate.LiteralOp && op.Literal == 'a' {
+			literal, found = op, true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("fixture contains no literal 'a'")
+	}
+	literalRange := doc.tokens[literal.ID].Literal
+	params := map[string]any{
+		"textDocument": map[string]any{"uri": uri},
+		"position": map[string]any{
+			"line": literalRange.Start.Line, "character": literalRange.Start.Character,
+		},
+	}
+	prepareParams, _ := json.Marshal(params)
+	result, err := s.handle("textDocument/prepareRename", prepareParams)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prepared := result.(map[string]any)
+	if prepared["range"] != literalRange || prepared["placeholder"] != "'a'" {
+		t.Fatalf("prepare rename = %#v, want literal range and placeholder", prepared)
+	}
+
+	params["newName"] = "'x'"
+	renameParams, _ := json.Marshal(params)
+	result, err = s.handle("gzpls/renameImpact", renameParams)
+	if err != nil {
+		t.Fatal(err)
+	}
+	impact := result.(renameImpactView)
+	if impact.OutputBytes != 400 || impact.Matches == 0 || impact.Members != 1 || !impact.DryRun {
+		t.Fatalf("rename impact = %#v, want 400 bytes through matches in one member", impact)
+	}
+
+	result, err = s.handle("textDocument/rename", renameParams)
+	if err != nil {
+		t.Fatal(err)
+	}
+	edit := result.(map[string]any)
+	if len(edit["changes"].(map[string]any)) != 0 {
+		t.Fatalf("dry-run rename returned edits: %#v", edit)
+	}
+	if !bytes.Contains(output.Bytes(), []byte("400 output bytes")) || !bytes.Contains(output.Bytes(), []byte("No edits applied")) {
+		t.Fatalf("rename notification = %q, want blast radius and dry-run warning", output.Bytes())
+	}
+}
+
+func TestParseRenameByte(t *testing.T) {
+	for input, want := range map[string]byte{
+		"x": 'x', "'x'": 'x', "\"\\n\"": '\n', "0xff": 0xff,
+	} {
+		got, err := parseRenameByte(input)
+		if err != nil {
+			t.Errorf("parseRenameByte(%q): %v", input, err)
+		} else if got != want {
+			t.Errorf("parseRenameByte(%q) = %#x, want %#x", input, got, want)
+		}
+	}
+	for _, input := range []string{"", "ab", "0x100", "💥"} {
+		if _, err := parseRenameByte(input); err == nil {
+			t.Errorf("parseRenameByte(%q) succeeded, want error", input)
+		}
+	}
 }
 
 func TestServeFramesInitializeResponse(t *testing.T) {
@@ -182,6 +278,7 @@ func TestServeFramesInitializeResponse(t *testing.T) {
 		[]byte(`"definitionProvider":true`),
 		[]byte(`"implementationProvider":true`),
 		[]byte(`"referencesProvider":true`),
+		[]byte(`"prepareProvider":true`),
 	} {
 		if !bytes.Contains(output.Bytes(), capability) {
 			t.Fatalf("initialize response does not advertise %s: %s", capability, output.Bytes())

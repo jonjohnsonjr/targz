@@ -88,6 +88,82 @@ type Production struct {
 	Intersection OutRange
 }
 
+// RenameImpact describes the transitive effect of changing one literal. The
+// compressed stream is not modified: this is the answer to the much safer
+// question, "what would happen if we renamed this byte?"
+type RenameImpact struct {
+	OpID        int
+	Original    byte
+	Replacement byte
+
+	OutputBytes int
+	Matches     int
+	Blocks      int
+	Members     int
+	FirstOutput OutPos
+	LastOutput  OutPos
+}
+
+// RenameImpact follows a literal through every subsequent match which copies
+// it. DEFLATE operations are already in output order, so one forward pass is
+// enough: a destination byte is affected exactly when its normalized source
+// byte is affected.
+func (t *Trace) RenameImpact(opID int, replacement byte) (RenameImpact, error) {
+	if opID < 0 || opID >= len(t.Ops) {
+		return RenameImpact{}, fmt.Errorf("operation %d is outside [0,%d)", opID, len(t.Ops))
+	}
+	op := t.Ops[opID]
+	if op.Kind != LiteralOp {
+		return RenameImpact{}, fmt.Errorf("operation %d is %s, not a literal", opID, op.Kind)
+	}
+	impact := RenameImpact{
+		OpID: opID, Original: op.Literal, Replacement: replacement,
+		FirstOutput: op.Output.Start, LastOutput: op.Output.Start,
+	}
+	affected := make([]bool, len(t.Output))
+	affected[op.Output.Start] = true
+	affectedBlocks := make(map[int]struct{})
+	affectedBlocks[op.BlockID] = struct{}{}
+
+	for i := opID + 1; i < len(t.Ops); i++ {
+		candidate := t.Ops[i]
+		if candidate.Kind != MatchOp {
+			continue
+		}
+		matched := false
+		seedStart := uint64(candidate.Output.Start) - uint64(candidate.Distance)
+		for pos := candidate.Output.Start; pos < candidate.Output.End; pos++ {
+			delta := uint64(pos - candidate.Output.Start)
+			source := OutPos(seedStart + delta%uint64(candidate.Distance))
+			if affected[source] {
+				affected[pos] = true
+				matched = true
+				impact.LastOutput = pos
+			}
+		}
+		if matched {
+			impact.Matches++
+			affectedBlocks[candidate.BlockID] = struct{}{}
+		}
+	}
+
+	for _, yes := range affected {
+		if yes {
+			impact.OutputBytes++
+		}
+	}
+	impact.Blocks = len(affectedBlocks)
+	for _, member := range t.Members {
+		for pos := member.Output.Start; pos < member.Output.End; pos++ {
+			if affected[pos] {
+				impact.Members++
+				break
+			}
+		}
+	}
+	return impact, nil
+}
+
 // Producers returns the instructions which produced bytes in query. Results
 // are ordered by output position and contain only the intersecting portion of
 // each instruction. Since operations partition the output, the implementation

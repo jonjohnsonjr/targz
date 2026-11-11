@@ -36,8 +36,9 @@ type document struct {
 }
 
 type opTokens struct {
-	Output lspRange
-	Seed   lspRange
+	Output  lspRange
+	Seed    lspRange
+	Literal lspRange
 }
 
 // DisassembleFile parses source and renders the stable, one-operation-per-line
@@ -134,9 +135,28 @@ func openDocument(uri, text string) *document {
 
 func opTokenRanges(line string, lineNumber int) opTokens {
 	return opTokens{
-		Output: tokenRange(line, lineNumber, "out["),
-		Seed:   tokenRange(line, lineNumber, "seed["),
+		Output:  tokenRange(line, lineNumber, "out["),
+		Seed:    tokenRange(line, lineNumber, "seed["),
+		Literal: literalTokenRange(line, lineNumber),
 	}
+}
+
+func literalTokenRange(line string, lineNumber int) lspRange {
+	const prefix = "literal "
+	start := strings.Index(line, prefix)
+	if start < 0 {
+		return lspRange{}
+	}
+	start += len(prefix)
+	end := strings.Index(line[start:], " out[")
+	if end < 0 {
+		return lspRange{}
+	}
+	end += start
+	for end > start && line[end-1] == ' ' {
+		end--
+	}
+	return byteRange(line, lineNumber, start, end)
 }
 
 func tokenRange(line string, lineNumber int, prefix string) lspRange {
@@ -150,6 +170,10 @@ func tokenRange(line string, lineNumber int, prefix string) lspRange {
 	}
 	end += start + 1
 	// LSP character offsets count UTF-16 code units rather than bytes.
+	return byteRange(line, lineNumber, start, end)
+}
+
+func byteRange(line string, lineNumber, start, end int) lspRange {
 	startCharacter := len(utf16.Encode([]rune(line[:start])))
 	endCharacter := len(utf16.Encode([]rune(line[:end])))
 	return lspRange{

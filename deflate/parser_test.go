@@ -255,6 +255,44 @@ func TestProducersPartitionRange(t *testing.T) {
 	}
 }
 
+func TestRenameImpactFollowsOverlappingAndLaterMatches(t *testing.T) {
+	input := bytes.Repeat([]byte("abc"), 400)
+	trace, err := ParseRaw(rawDeflate(t, input, flate.BestCompression))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var literal Op
+	found := false
+	for _, op := range trace.Ops {
+		if op.Kind == LiteralOp && op.Literal == 'a' {
+			literal, found = op, true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("fixture contains no literal 'a'")
+	}
+	impact, err := trace.RenameImpact(literal.ID, 'x')
+	if err != nil {
+		t.Fatal(err)
+	}
+	if impact.OutputBytes != 400 {
+		t.Fatalf("affected output bytes = %d, want 400", impact.OutputBytes)
+	}
+	if impact.Matches == 0 {
+		t.Fatal("rename reached no match operations")
+	}
+	if impact.FirstOutput != literal.Output.Start || impact.LastOutput != OutPos(len(input)-3) {
+		t.Fatalf("affected range = [%d,%d], want [%d,%d]", impact.FirstOutput, impact.LastOutput, literal.Output.Start, len(input)-3)
+	}
+	if impact.Original != 'a' || impact.Replacement != 'x' {
+		t.Fatalf("rename bytes = %q -> %q, want 'a' -> 'x'", impact.Original, impact.Replacement)
+	}
+	if impact.Blocks == 0 {
+		t.Fatal("rename reached no blocks")
+	}
+}
+
 func assertTraceInvariants(t testing.TB, trace *Trace) {
 	t.Helper()
 	var output OutPos

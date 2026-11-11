@@ -89,6 +89,7 @@ func (s *Server) handle(method string, raw json.RawMessage) (any, error) {
 				"hoverProvider":          true,
 				"implementationProvider": true,
 				"referencesProvider":     true,
+				"renameProvider":         map[string]any{"prepareProvider": true},
 			},
 			"serverInfo": map[string]any{"name": "gzpls", "version": "0.1.0"},
 		}, nil
@@ -130,6 +131,52 @@ func (s *Server) handle(method string, raw json.RawMessage) (any, error) {
 			return nil, err
 		}
 		return []callHierarchyItem{doc.item(*op)}, nil
+	case "textDocument/prepareRename":
+		doc, op, err := s.literalAt(raw)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{
+			"range":       doc.tokens[op.ID].Literal,
+			"placeholder": quoteByte(op.Literal),
+		}, nil
+	case "textDocument/rename", "gzpls/renameImpact":
+		doc, op, err := s.literalAt(raw)
+		if err != nil {
+			return nil, err
+		}
+		var params struct {
+			NewName string `json:"newName"`
+		}
+		if err := json.Unmarshal(raw, &params); err != nil {
+			return nil, err
+		}
+		replacement, err := parseRenameByte(params.NewName)
+		if err != nil {
+			return nil, err
+		}
+		if replacement == op.Literal {
+			return nil, fmt.Errorf("literal is already %s", quoteByte(op.Literal))
+		}
+		impact, err := doc.trace.RenameImpact(op.ID, replacement)
+		if err != nil {
+			return nil, err
+		}
+		view := viewRenameImpact(impact)
+		if method == "gzpls/renameImpact" {
+			return view, nil
+		}
+		message := renameImpactMessage(impact)
+		if err := s.writeMessage(map[string]any{
+			"jsonrpc": "2.0",
+			"method":  "window/showMessage",
+			"params":  map[string]any{"type": 2, "message": message},
+		}); err != nil {
+			return nil, err
+		}
+		// Deliberately return an empty edit. Rewriting the textual disassembly
+		// would lie about the still-unchanged compressed source.
+		return map[string]any{"changes": map[string]any{}}, nil
 	case "textDocument/definition":
 		doc, op, err := s.operationAt(raw)
 		if err != nil || op == nil {
@@ -297,6 +344,88 @@ func (s *Server) operationAt(raw json.RawMessage) (*document, *deflate.Op, error
 	}
 	op := doc.trace.Ops[id]
 	return doc, &op, nil
+}
+
+func (s *Server) literalAt(raw json.RawMessage) (*document, deflate.Op, error) {
+	doc, op, err := s.operationAt(raw)
+	if err != nil {
+		return nil, deflate.Op{}, err
+	}
+	if op == nil || op.Kind != deflate.LiteralOp {
+		return nil, deflate.Op{}, errors.New("rename is available only on literal bytes")
+	}
+	var params struct {
+		Position position `json:"position"`
+	}
+	if err := json.Unmarshal(raw, &params); err != nil {
+		return nil, deflate.Op{}, err
+	}
+	r := doc.tokens[op.ID].Literal
+	if params.Position.Line != r.Start.Line || params.Position.Character < r.Start.Character || params.Position.Character >= r.End.Character {
+		return nil, deflate.Op{}, errors.New("place the cursor on the literal token to rename it")
+	}
+	return doc, *op, nil
+}
+
+type renameImpactView struct {
+	Operation   int    `json:"operation"`
+	Original    string `json:"original"`
+	Replacement string `json:"replacement"`
+	OutputBytes int    `json:"outputBytes"`
+	Matches     int    `json:"matches"`
+	Blocks      int    `json:"blocks"`
+	Members     int    `json:"members"`
+	FirstOutput uint64 `json:"firstOutput"`
+	LastOutput  uint64 `json:"lastOutput"`
+	DryRun      bool   `json:"dryRun"`
+}
+
+func viewRenameImpact(impact deflate.RenameImpact) renameImpactView {
+	return renameImpactView{
+		Operation: impact.OpID, Original: quoteByte(impact.Original), Replacement: quoteByte(impact.Replacement),
+		OutputBytes: impact.OutputBytes, Matches: impact.Matches, Blocks: impact.Blocks, Members: impact.Members,
+		FirstOutput: uint64(impact.FirstOutput), LastOutput: uint64(impact.LastOutput), DryRun: true,
+	}
+}
+
+func renameImpactMessage(impact deflate.RenameImpact) string {
+	checksum := "raw DEFLATE has no wrapper checksum"
+	if impact.Members == 1 {
+		checksum = "1 gzip CRC32 would need to be rewritten"
+	} else if impact.Members > 1 {
+		checksum = fmt.Sprintf("%d gzip CRC32 values would need to be rewritten", impact.Members)
+	}
+	return fmt.Sprintf(
+		"Rename preview: %s → %s would affect %d output bytes through %d matches across %d blocks and %d gzip members (output %d…%d); %s. No edits applied: gzpls is not yet an assembler.",
+		quoteByte(impact.Original), quoteByte(impact.Replacement), impact.OutputBytes, impact.Matches,
+		impact.Blocks, impact.Members, impact.FirstOutput, impact.LastOutput, checksum,
+	)
+}
+
+func parseRenameByte(name string) (byte, error) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return 0, errors.New("replacement must be one byte")
+	}
+	if strings.HasPrefix(name, "0x") || strings.HasPrefix(name, "0X") {
+		value, err := strconv.ParseUint(name[2:], 16, 8)
+		if err != nil {
+			return 0, fmt.Errorf("invalid byte %q", name)
+		}
+		return byte(value), nil
+	}
+	if (name[0] == '\'' || name[0] == '"') && len(name) >= 2 {
+		unquoted, err := strconv.Unquote(name)
+		if err != nil {
+			return 0, fmt.Errorf("invalid quoted byte %q: %w", name, err)
+		}
+		name = unquoted
+	}
+	runes := []rune(name)
+	if len(runes) != 1 || runes[0] > 255 {
+		return 0, fmt.Errorf("replacement %q is not exactly one byte", name)
+	}
+	return byte(runes[0]), nil
 }
 
 func (s *Server) operationFromItem(raw json.RawMessage) (*document, deflate.Op, error) {
