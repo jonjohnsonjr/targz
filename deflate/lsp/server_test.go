@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"testing"
+
+	"github.com/jonjohnsonjr/targz/deflate"
 )
 
 func TestCallHierarchyFollowsDeflateDependencies(t *testing.T) {
@@ -87,6 +89,58 @@ func TestCallHierarchyFollowsDeflateDependencies(t *testing.T) {
 	if !found {
 		t.Fatalf("producer incoming calls = %#v, want match %d", incoming, matchID)
 	}
+
+	result, err = s.handle("textDocument/definition", prepareParams)
+	if err != nil {
+		t.Fatal(err)
+	}
+	definitions := result.([]location)
+	if len(definitions) != len(outgoing) {
+		t.Fatalf("definitions = %d, outgoing calls = %d", len(definitions), len(outgoing))
+	}
+	for i := range definitions {
+		if definitions[i].Range != outgoing[i].To.Range {
+			t.Fatalf("definition %d = %#v, outgoing target = %#v", i, definitions[i], outgoing[i].To)
+		}
+	}
+
+	producerLine := doc.opLine[producer.Data.Op]
+	producerPosition, _ := json.Marshal(map[string]any{
+		"textDocument": map[string]any{"uri": uri},
+		"position":     map[string]any{"line": producerLine, "character": 1},
+		"context":      map[string]any{"includeDeclaration": false},
+	})
+	result, err = s.handle("textDocument/references", producerPosition)
+	if err != nil {
+		t.Fatal(err)
+	}
+	references := result.([]location)
+	found = false
+	for _, reference := range references {
+		if reference.Range == doc.opRange(matchID) {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("producer references = %#v, want match %d", references, matchID)
+	}
+
+	result, err = s.handle("textDocument/implementation", prepareParams)
+	if err != nil {
+		t.Fatal(err)
+	}
+	implementations := result.([]location)
+	if len(implementations) == 0 {
+		t.Fatal("match has no implementations")
+	}
+	for _, implementation := range implementations {
+		id := doc.lineOp[implementation.Range.Start.Line]
+		kind := doc.trace.Ops[id].Kind
+		if kind != deflate.LiteralOp && kind != deflate.StoredOp {
+			t.Fatalf("implementation op %d is %s, want a terminal producer", id, kind)
+		}
+	}
 }
 
 func TestServeFramesInitializeResponse(t *testing.T) {
@@ -102,5 +156,14 @@ func TestServeFramesInitializeResponse(t *testing.T) {
 	}
 	if !bytes.Contains(output.Bytes(), []byte(`"callHierarchyProvider":true`)) {
 		t.Fatalf("initialize response does not advertise call hierarchy: %s", output.Bytes())
+	}
+	for _, capability := range [][]byte{
+		[]byte(`"definitionProvider":true`),
+		[]byte(`"implementationProvider":true`),
+		[]byte(`"referencesProvider":true`),
+	} {
+		if !bytes.Contains(output.Bytes(), capability) {
+			t.Fatalf("initialize response does not advertise %s: %s", capability, output.Bytes())
+		}
 	}
 }

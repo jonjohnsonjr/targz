@@ -59,7 +59,16 @@ go run ./cmd/gzpls serve
 The generated document starts with the absolute path of its compressed source.
 The server reparses that source when the document opens, so it can answer
 `textDocument/prepareCallHierarchy`, `callHierarchy/incomingCalls`,
-`callHierarchy/outgoingCalls`, and hover requests using the bit-exact trace.
+`callHierarchy/outgoingCalls`, and hover requests using the bit-exact trace. It
+also maps the editor's most important navigation commands onto provenance:
+
+- **Go to Definition** jumps from a match to the operations which immediately
+  produce its normalized source seed.
+- **Find References** finds later matches which directly consume this
+  operation's output.
+- **Go to Implementation** follows the dependency graph through matches to the
+  literal or stored operations which ultimately introduced the bytes.
+
 Raw streams can be generated with `disassemble -raw`.
 
 The call hierarchy deliberately stays compact for overlapping copies. Instead

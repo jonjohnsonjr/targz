@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -82,9 +83,12 @@ func (s *Server) handle(method string, raw json.RawMessage) (any, error) {
 	case "initialize":
 		return map[string]any{
 			"capabilities": map[string]any{
-				"textDocumentSync":      1,
-				"callHierarchyProvider": true,
-				"hoverProvider":         true,
+				"textDocumentSync":       1,
+				"callHierarchyProvider":  true,
+				"definitionProvider":     true,
+				"hoverProvider":          true,
+				"implementationProvider": true,
+				"referencesProvider":     true,
 			},
 			"serverInfo": map[string]any{"name": "gzpls", "version": "0.1.0"},
 		}, nil
@@ -126,6 +130,57 @@ func (s *Server) handle(method string, raw json.RawMessage) (any, error) {
 			return nil, err
 		}
 		return []callHierarchyItem{doc.item(*op)}, nil
+	case "textDocument/definition":
+		doc, op, err := s.operationAt(raw)
+		if err != nil || op == nil {
+			return nil, err
+		}
+		seed, ok := op.Seed()
+		if !ok {
+			return []location{}, nil
+		}
+		productions := doc.trace.Producers(seed)
+		locations := make([]location, 0, len(productions))
+		for _, production := range productions {
+			locations = append(locations, doc.location(production.Op.ID))
+		}
+		return locations, nil
+	case "textDocument/references":
+		doc, op, err := s.operationAt(raw)
+		if err != nil || op == nil {
+			return nil, err
+		}
+		var params struct {
+			Context struct {
+				IncludeDeclaration bool `json:"includeDeclaration"`
+			} `json:"context"`
+		}
+		if err := json.Unmarshal(raw, &params); err != nil {
+			return nil, err
+		}
+		uses := doc.trace.Uses(op.Output)
+		locations := make([]location, 0, len(uses)+1)
+		if params.Context.IncludeDeclaration {
+			locations = append(locations, doc.location(op.ID))
+		}
+		for _, use := range uses {
+			locations = append(locations, doc.location(use.Op.ID))
+		}
+		return locations, nil
+	case "textDocument/implementation":
+		doc, op, err := s.operationAt(raw)
+		if err != nil || op == nil {
+			return nil, err
+		}
+		ids, err := doc.implementations(*op)
+		if err != nil {
+			return nil, err
+		}
+		locations := make([]location, 0, len(ids))
+		for _, id := range ids {
+			locations = append(locations, doc.location(id))
+		}
+		return locations, nil
 	case "callHierarchy/incomingCalls":
 		doc, op, err := s.operationFromItem(raw)
 		if err != nil {
@@ -180,6 +235,11 @@ type position struct {
 type lspRange struct {
 	Start position `json:"start"`
 	End   position `json:"end"`
+}
+
+type location struct {
+	URI   string   `json:"uri"`
+	Range lspRange `json:"range"`
 }
 
 type itemData struct {
@@ -274,6 +334,35 @@ func (d *document) item(op deflate.Op) callHierarchyItem {
 func (d *document) opRange(id int) lspRange {
 	line := d.opLine[id]
 	return lspRange{Start: position{Line: line}, End: position{Line: line, Character: d.lineLen[line]}}
+}
+
+func (d *document) location(id int) location {
+	return location{URI: d.uri, Range: d.opRange(id)}
+}
+
+// implementations returns the concrete literal and stored operations from
+// which an operation's value originates. A DEFLATE distance is at most 32 KiB,
+// so walking each byte in the normalized seed keeps this simple, exact, and
+// bounded without expanding a potentially enormous match destination.
+func (d *document) implementations(op deflate.Op) ([]int, error) {
+	if op.Kind != deflate.MatchOp {
+		return []int{op.ID}, nil
+	}
+	seed, _ := op.Seed()
+	seen := make(map[int]struct{})
+	for pos := seed.Start; pos < seed.End; pos++ {
+		steps, err := d.trace.Origin(pos)
+		if err != nil {
+			return nil, err
+		}
+		seen[steps[len(steps)-1].Op.ID] = struct{}{}
+	}
+	ids := make([]int, 0, len(seen))
+	for id := range seen {
+		ids = append(ids, id)
+	}
+	sort.Ints(ids)
+	return ids, nil
 }
 
 func (d *document) hover(op deflate.Op) string {
