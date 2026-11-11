@@ -229,6 +229,32 @@ func TestReverseUseIndexMatchesNaiveScan(t *testing.T) {
 	}
 }
 
+func TestProducersPartitionRange(t *testing.T) {
+	input := bytes.Repeat([]byte("abc"), 400)
+	trace, err := ParseRaw(rawDeflate(t, input, flate.BestCompression))
+	if err != nil {
+		t.Fatal(err)
+	}
+	query := OutRange{Start: 1, End: OutPos(len(input) - 1)}
+	productions := trace.Producers(query)
+	if len(productions) < 2 {
+		t.Fatalf("Producers(%v) returned %d operation(s), want several", query, len(productions))
+	}
+	next := query.Start
+	for _, production := range productions {
+		if production.Intersection.Start != next {
+			t.Fatalf("gap before %v; next byte was %d", production.Intersection, next)
+		}
+		if !production.Op.Output.Contains(production.Intersection.Start) || production.Intersection.End > production.Op.Output.End {
+			t.Fatalf("intersection %v is outside op %d output %v", production.Intersection, production.Op.ID, production.Op.Output)
+		}
+		next = production.Intersection.End
+	}
+	if next != query.End {
+		t.Fatalf("productions end at %d, want %d", next, query.End)
+	}
+}
+
 func assertTraceInvariants(t testing.TB, trace *Trace) {
 	t.Helper()
 	var output OutPos

@@ -79,6 +79,41 @@ type Use struct {
 	Repeats      int
 }
 
+// Production describes the part of an output range produced by one
+// instruction. It is the forward counterpart to Use: Uses answers which
+// matches consume a range, while Producers answers which instructions created
+// it.
+type Production struct {
+	Op           Op
+	Intersection OutRange
+}
+
+// Producers returns the instructions which produced bytes in query. Results
+// are ordered by output position and contain only the intersecting portion of
+// each instruction. Since operations partition the output, the implementation
+// can enter the instruction stream with one binary search and scan forward.
+func (t *Trace) Producers(query OutRange) []Production {
+	var productions []Production
+	if query.End <= query.Start {
+		return productions
+	}
+	i := sort.Search(len(t.Ops), func(i int) bool {
+		return t.Ops[i].Output.End > query.Start
+	})
+	for ; i < len(t.Ops) && t.Ops[i].Output.Start < query.End; i++ {
+		op := t.Ops[i]
+		start := maxOut(query.Start, op.Output.Start)
+		end := minOut(query.End, op.Output.End)
+		if start < end {
+			productions = append(productions, Production{
+				Op:           op,
+				Intersection: OutRange{Start: start, End: end},
+			})
+		}
+	}
+	return productions
+}
+
 type useIndexEntry struct {
 	seed OutRange
 	op   int

@@ -37,6 +37,36 @@ The web debugger provides block navigation, a paged instruction trace,
 clickable output bytes, normalized match seeds, origin chains, and reverse-use
 queries. It binds to a random localhost port by default.
 
+#### `gzpls`: IDE-grade language intelligence for gzip
+
+`gzpls` is a small LSP 3.17 server which maps DEFLATE provenance onto an IDE's
+call hierarchy. A match "calls" the earlier instructions which produced its
+normalized source seed. Its incoming calls are later matches which consume the
+bytes it produced. Literals are constants and matches are functions, obviously.
+
+First produce the textual document the server operates on:
+
+```console
+go run ./cmd/gzpls disassemble archive.tar.gz > archive.tar.gz.deflate
+```
+
+Then configure an LSP client to associate `*.deflate` with this command:
+
+```console
+go run ./cmd/gzpls serve
+```
+
+The generated document starts with the absolute path of its compressed source.
+The server reparses that source when the document opens, so it can answer
+`textDocument/prepareCallHierarchy`, `callHierarchy/incomingCalls`,
+`callHierarchy/outgoingCalls`, and hover requests using the bit-exact trace.
+Raw streams can be generated with `disassemble -raw`.
+
+The call hierarchy deliberately stays compact for overlapping copies. Instead
+of constructing a thousand-node chain for `match len=1000 dist=1`, the match
+has one outgoing edge to its one-byte seed and reports the repetition count in
+the hierarchy detail.
+
 ### gsip
 
 `gsip` is very similar to [`compress/gzip`](https://pkg.go.dev/compress/gzip) but for an `io.ReaderAt` instead of an `io.Reader`.
