@@ -456,6 +456,162 @@ func TestMatchExtraBitsJumpToRFCTableCells(t *testing.T) {
 	}
 }
 
+func TestCodeLengthRepeatExtraBitsJumpToRFCRules(t *testing.T) {
+	input := bytes.Repeat([]byte("the quick brown fox jumps over the lazy dog; 0123456789\n"), 300)
+	var compressed bytes.Buffer
+	w, err := flate.NewWriter(&compressed, flate.BestCompression)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.Write(input); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	source := filepath.Join(t.TempDir(), "repeat.deflate")
+	if err := os.WriteFile(source, compressed.Bytes(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	listing, err := DisassembleFileView(source, true, "trace")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	const uri = "file:///repeat.deflate"
+	s := NewServer(bytes.NewReader(nil), &bytes.Buffer{})
+	doc := openDocument(uri, string(listing))
+	s.docs[uri] = doc
+	for _, block := range doc.trace.Blocks {
+		if block.Dynamic == nil {
+			continue
+		}
+		for runIndex, run := range block.Dynamic.LengthRuns {
+			if run.ExtraBits.Len() == 0 {
+				continue
+			}
+			node := doc.encoding[lengthRunLabel(block.ID, runIndex)]
+			program, err := s.symbolDocument(doc, node)
+			if err != nil {
+				t.Fatal(err)
+			}
+			tokens := program.encodingTok[node.Label]
+			if tokens.Primary == (lspRange{}) || tokens.Extra == (lspRange{}) {
+				t.Fatalf("repeat instruction was not split: %#v", tokens)
+			}
+			symbol := definitionLinksAtCharacter(t, s, program.uri, tokens.Primary.Start.Line, tokens.Primary.Start.Character)
+			if len(symbol) != 1 || !strings.Contains(symbol[0].TargetURI, "codelen.gzsym") {
+				t.Fatalf("repeat symbol definition = %#v, want code-length table", symbol)
+			}
+			extra := definitionLinksAtCharacter(t, s, program.uri, tokens.Extra.Start.Line, tokens.Extra.Start.Character)
+			want := rfcAnchors[codeLengthExtraRFCAnchor(run.Symbol)].Selection
+			if len(extra) != 1 || !strings.HasSuffix(extra[0].TargetURI, "/doc/rfc1951.txt") || extra[0].TargetSelectionRange != want {
+				t.Fatalf("repeat extra definition = %#v, want RFC rule %#v", extra, want)
+			}
+			return
+		}
+	}
+	t.Fatal("fixture has no code-length repeat with extra bits")
+}
+
+func TestBlockHeaderFieldsNavigateAndHover(t *testing.T) {
+	input := bytes.Repeat([]byte("header fields should be inspectable\n"), 500)
+	var compressed bytes.Buffer
+	w, err := flate.NewWriter(&compressed, flate.BestCompression)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.Write(input); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	source := filepath.Join(t.TempDir(), "headers.deflate")
+	if err := os.WriteFile(source, compressed.Bytes(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	listing, err := DisassembleFileView(source, true, "trace")
+	if err != nil {
+		t.Fatal(err)
+	}
+	const uri = "file:///headers.deflate"
+	s := NewServer(bytes.NewReader(nil), &bytes.Buffer{})
+	doc := openDocument(uri, string(listing))
+	s.docs[uri] = doc
+	if doc.loadErr != nil {
+		t.Fatal(doc.loadErr)
+	}
+
+	block := doc.trace.Blocks[0]
+	fields := map[string]string{"bfinal": "term-bfinal", "btype": "term-btype"}
+	if block.Dynamic != nil {
+		fields["hlit"] = "term-hlit"
+		fields["hdist"] = "term-hdist"
+		fields["hclen"] = "term-hclen"
+	}
+	for field, anchorName := range fields {
+		node := doc.encoding[headerLabel(block.ID, field)]
+		if node.Label == "" {
+			t.Fatalf("missing %s header node", field)
+		}
+		selection := doc.encodingSelection(node)
+		links := definitionLinksAtCharacter(t, s, uri, selection.Start.Line, selection.Start.Character)
+		if len(links) != 1 || links[0].TargetSelectionRange != rfcAnchors[anchorName].Selection {
+			t.Fatalf("%s definition = %#v", field, links)
+		}
+		params, _ := json.Marshal(map[string]any{
+			"textDocument": map[string]any{"uri": uri},
+			"position":     selection.Start,
+		})
+		hoverResult, err := s.handle("textDocument/hover", params)
+		if err != nil {
+			t.Fatal(err)
+		}
+		hover := hoverResult.(map[string]any)["contents"].(map[string]any)["value"].(string)
+		if !strings.Contains(hover, node.Name) || !strings.Contains(hover, "RFC 1951") {
+			t.Fatalf("%s hover = %q", field, hover)
+		}
+	}
+}
+
+func TestStoredHeaderLengthFieldsNavigate(t *testing.T) {
+	var compressed bytes.Buffer
+	w, err := flate.NewWriter(&compressed, flate.NoCompression)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.Write([]byte("stored block")); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	source := filepath.Join(t.TempDir(), "stored.deflate")
+	if err := os.WriteFile(source, compressed.Bytes(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	listing, err := DisassembleFileView(source, true, "trace")
+	if err != nil {
+		t.Fatal(err)
+	}
+	const uri = "file:///stored.deflate"
+	s := NewServer(bytes.NewReader(nil), &bytes.Buffer{})
+	doc := openDocument(uri, string(listing))
+	s.docs[uri] = doc
+	if doc.trace.Blocks[0].Kind != deflate.StoredBlock {
+		t.Fatalf("block kind = %s, want stored", doc.trace.Blocks[0].Kind)
+	}
+	for field, anchorName := range map[string]string{"len": "term-len", "nlen": "term-nlen"} {
+		node := doc.encoding[headerLabel(0, field)]
+		selection := doc.encodingSelection(node)
+		links := definitionLinksAtCharacter(t, s, uri, selection.Start.Line, selection.Start.Character)
+		if len(links) != 1 || links[0].TargetSelectionRange != rfcAnchors[anchorName].Selection {
+			t.Fatalf("%s definition = %#v", field, links)
+		}
+	}
+}
+
 func TestRFCDefinitionsResolveTermsAndSections(t *testing.T) {
 	rfcPath := filepath.Join("..", "..", "doc", "rfc1951.txt")
 	contents, err := os.ReadFile(rfcPath)
@@ -496,6 +652,18 @@ func TestRFCDefinitionsResolveTermsAndSections(t *testing.T) {
 	if links := definitionLinksAtCharacter(t, s, uri, canonical.Line, canonical.Character); len(links) != 0 {
 		t.Fatalf("canonical HCLEN definition loops to itself: %#v", links)
 	}
+	hoverParams, _ := json.Marshal(map[string]any{
+		"textDocument": map[string]any{"uri": uri},
+		"position":     map[string]any{"line": 575, "character": 39},
+	})
+	hoverResult, err := s.handle("textDocument/hover", hoverParams)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hover := hoverResult.(map[string]any)["contents"].(map[string]any)["value"].(string)
+	if !strings.Contains(hover, "RFC 1951") || !strings.Contains(hover, "BTYPE") {
+		t.Fatalf("RFC hover = %q", hover)
+	}
 }
 
 func TestRFCAnchorSelectionsRemainExact(t *testing.T) {
@@ -513,6 +681,11 @@ func TestRFCAnchorSelectionsRemainExact(t *testing.T) {
 		"term-hlit":           "HLIT",
 		"term-hdist":          "HDIST",
 		"term-hclen":          "HCLEN",
+		"term-len":            "LEN",
+		"term-nlen":           "NLEN",
+		"repeat-extra-16":     "2 bits",
+		"repeat-extra-17":     "3 bits",
+		"repeat-extra-18":     "7 bits",
 		"section-3.2.1":       "3.2.1",
 		"section-3.2.2":       "3.2.2",
 		"section-3.2.3":       "3.2.3",
@@ -850,6 +1023,11 @@ func TestRenamePreparesLiteralReportsImpactAndRewritesArchive(t *testing.T) {
 		t.Fatal("fixture contains no literal 'a'")
 	}
 	literalRange := doc.tokens[literal.ID].Literal
+	oldDefinition := definitionLinksAtCharacter(t, s, uri, literalRange.Start.Line, literalRange.Start.Character)
+	if len(oldDefinition) != 1 || !strings.HasSuffix(oldDefinition[0].TargetURI, ".gzsym") {
+		t.Fatalf("pre-rename literal definition = %#v", oldDefinition)
+	}
+	oldSymbolURI := oldDefinition[0].TargetURI
 	params := map[string]any{
 		"textDocument": map[string]any{"uri": uri},
 		"position": map[string]any{
@@ -896,6 +1074,26 @@ func TestRenamePreparesLiteralReportsImpactAndRewritesArchive(t *testing.T) {
 	}
 	if !bytes.Equal(trace.Output, bytes.Repeat([]byte("xbc"), 400)) {
 		t.Fatalf("rewritten output starts %q, want xbc repeated", trace.Output[:12])
+	}
+	refreshed := s.docs[uri]
+	var renamed deflate.Op
+	found = false
+	for _, op := range refreshed.trace.Ops {
+		if op.Kind == deflate.LiteralOp && op.Literal == 'x' {
+			renamed, found = op, true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("refreshed trace contains no literal 'x'")
+	}
+	renamedRange := refreshed.tokens[renamed.ID].Literal
+	newDefinition := definitionLinksAtCharacter(t, s, uri, renamedRange.Start.Line, renamedRange.Start.Character)
+	if len(newDefinition) != 1 || !strings.HasSuffix(newDefinition[0].TargetURI, ".gzsym") {
+		t.Fatalf("post-rename literal definition = %#v", newDefinition)
+	}
+	if newDefinition[0].TargetURI == oldSymbolURI {
+		t.Fatalf("rename reused stale generated document %q", oldSymbolURI)
 	}
 	if !bytes.Contains(output.Bytes(), []byte("400 output bytes")) || !bytes.Contains(output.Bytes(), []byte("re-encoded 1 gzip member")) {
 		t.Fatalf("rename notification = %q, want applied blast radius", output.Bytes())

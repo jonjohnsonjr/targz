@@ -118,12 +118,23 @@ slot it assigns. The final definition opens the vendored
 Fixed-Huffman literals take the shorter path from their generated table entry
 to the appropriate row of the §3.2.6 table.
 
+Block headers participate too. Compact definition lines expose `BFINAL`,
+`BTYPE`, dynamic `HLIT`/`HDIST`/`HCLEN` counts, and stored-block `LEN`/`NLEN`
+fields without crowding the operation trace. Go to Definition on a field lands
+at its governing RFC text. Hover on any header or generated Huffman layer shows
+the wire bits, decoded meaning, and either its parent layer or RFC terminus.
+
 Match operands preserve the boundary between the Huffman symbol and its extra
 bits as `symbol·extra`. Go to Definition before the dot follows the Huffman
 ancestry described above; Go to Definition after the dot jumps directly to
 that symbol's `Extra Bits` cell in the length or distance table in §3.2.5.
 This also applies to fixed-Huffman blocks: their symbol path ends in §3.2.6,
 while their extra bits still end in §3.2.5.
+
+The same split applies inside the dynamic code-length program. For repeat
+symbols 16–18, the bits before `·` follow the code-length Huffman ancestry and
+the bits after it jump to the exact two-, three-, or seven-bit repeat rule in
+§3.2.7.
 
 Huffman tables, expanded length assignments, the compact length program, and
 the HCLEN vector open as generated `*.gzsym` documents. Their zero-based LSP
@@ -150,6 +161,9 @@ vim.api.nvim_create_autocmd("FileType", {
 Include `gzpls-symbols` in the `filetypes` for the `gzpls` LSP configuration.
 The generated files live only for the lifetime of the language server. The
 trace, tar manifest, and RFC buffers retain their ordinary line-number display.
+Generated filenames include a fingerprint of the compressed source, so a
+rename or external rewrite navigates to a fresh symbol document instead of
+silently reusing a table from the previous stream.
 
 RFC destinations use a static semantic anchor index. The link retains the
 governing paragraph as context while selecting the exact token: an HCLEN field
@@ -161,6 +175,18 @@ section reference from `3.2.1` through `3.2.7` jumps to its canonical
 definition. Canonical occurrences intentionally have no self-link. Tests pin
 every table cell and named anchor to its selected RFC text so a changed
 vendored copy fails loudly instead of sending the cursor somewhere plausible.
+
+The protocol tests cover individual LSP operations. An opt-in smoke test also
+launches a real headless Neovim instance, starts `gzpls`, opens a trace, walks
+through generated buffers, and verifies that it reaches a non-empty exact RFC
+selection:
+
+```console
+GZPLS_NVIM_TEST=1 go test ./deflate/lsp -run Neovim -v
+```
+
+It skips during ordinary test runs because Neovim is not a Go module
+dependency and is not expected to exist on every CI image.
 
 ### gsip
 
@@ -188,7 +214,9 @@ This needs some work to be more efficient, but demonstrates the proof of concept
 
 ## TODO
 
-* Add tests.
+* Expand the DEFLATE debugger corpus with malformed streams, concatenated gzip
+  members, and compressor-generated edge cases.
+* Add fuzzing for trace rendering and LSP position/range invariants.
 * Optimize formats for gsip.Index and tarfs.TOC.
 * Allow incremental indexing of both gsip and tarfs metadata.
 * Make concurrent tarfs access safe.

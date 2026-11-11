@@ -12,6 +12,7 @@ import (
 
 type encodingNode struct {
 	Label     string
+	Name      string
 	Text      string
 	Parent    string
 	Alphabet  string
@@ -54,6 +55,7 @@ func buildEncodingGraph(trace *deflate.Trace) encodingGraph {
 	}
 
 	for _, block := range trace.Blocks {
+		graph.Nodes = append(graph.Nodes, blockHeaderNodes(trace, block)...)
 		symbolSet := used[block.ID]
 		if symbolSet == nil {
 			continue
@@ -78,6 +80,7 @@ func buildEncodingGraph(trace *deflate.Trace) encodingGraph {
 			}
 			node := encodingNode{
 				Label: litlenLabel(block.ID, symbol), BlockID: block.ID,
+				Name:     fmt.Sprintf("literal/length symbol %d", symbol),
 				Alphabet: "litlen", Symbol: symbol,
 				Text: fmt.Sprintf("%-15s # %s", codeString(code), litlenMeaning(symbol)),
 			}
@@ -97,6 +100,7 @@ func buildEncodingGraph(trace *deflate.Trace) encodingGraph {
 			}
 			node := encodingNode{
 				Label: distanceLabel(block.ID, symbol), BlockID: block.ID,
+				Name:     fmt.Sprintf("distance symbol %d", symbol),
 				Alphabet: "distance", Symbol: symbol,
 				Text: fmt.Sprintf("%-15s # %s", codeString(code), distanceMeaning(symbol)),
 			}
@@ -128,6 +132,7 @@ func buildEncodingGraph(trace *deflate.Trace) encodingGraph {
 			}
 			graph.Nodes = append(graph.Nodes, encodingNode{
 				Label: lengthSlotLabel(block.ID, labelAlphabet, symbol), Parent: lengthRunLabel(block.ID, runIndex),
+				Name:     fmt.Sprintf("%s code length %d", labelAlphabet, symbol),
 				Alphabet: alphabet, Symbol: symbol, BlockID: block.ID,
 				Text: lengthAssignmentText(run, runIndex),
 			})
@@ -135,6 +140,7 @@ func buildEncodingGraph(trace *deflate.Trace) encodingGraph {
 		for runIndex, run := range header.LengthRuns {
 			graph.Nodes = append(graph.Nodes, encodingNode{
 				Label: lengthRunLabel(block.ID, runIndex), Parent: codeLengthLabel(block.ID, run.Symbol),
+				Name:     fmt.Sprintf("code-length instruction %d", runIndex),
 				Alphabet: "length-program", Symbol: runIndex, BlockID: block.ID,
 				Text: lengthRunText(trace, header, run),
 			})
@@ -147,6 +153,7 @@ func buildEncodingGraph(trace *deflate.Trace) encodingGraph {
 			}
 			graph.Nodes = append(graph.Nodes, encodingNode{
 				Label: codeLengthLabel(block.ID, symbol), Parent: hclenLabel(block.ID, field), BlockID: block.ID,
+				Name:     fmt.Sprintf("code-length symbol %d", symbol),
 				Alphabet: "codelen", Symbol: symbol,
 				Text: fmt.Sprintf("%-15s # length %d", codeString(code), symbol),
 			})
@@ -155,6 +162,7 @@ func buildEncodingGraph(trace *deflate.Trace) encodingGraph {
 			wire, _ := trace.BitString(field.Input)
 			graph.Nodes = append(graph.Nodes, encodingNode{
 				Label: hclenLabel(block.ID, fieldIndex), BlockID: block.ID,
+				Name:     fmt.Sprintf("HCLEN transmission field %d", fieldIndex),
 				Alphabet: "hclen", Symbol: fieldIndex,
 				Text:      fmt.Sprintf("%-15s # symbol %d: %d bits", wire, field.Symbol, field.Length),
 				RFCAnchor: hclenRFCAnchor(fieldIndex),
@@ -162,6 +170,58 @@ func buildEncodingGraph(trace *deflate.Trace) encodingGraph {
 		}
 	}
 	return graph
+}
+
+func blockHeaderNodes(trace *deflate.Trace, block deflate.Block) []encodingNode {
+	start := block.Input.Start
+	nodes := []encodingNode{
+		{
+			Label: headerLabel(block.ID, "bfinal"), Name: "BFINAL", BlockID: block.ID,
+			Text:      fmt.Sprintf("%-15s # BFINAL %t", mustBitString(trace, deflate.BitRange{Start: start, End: start + 1}), block.Final),
+			RFCAnchor: "term-bfinal",
+		},
+		{
+			Label: headerLabel(block.ID, "btype"), Name: "BTYPE", BlockID: block.ID,
+			Text:      fmt.Sprintf("%-15s # BTYPE %s", mustBitString(trace, deflate.BitRange{Start: start + 1, End: start + 3}), block.Kind),
+			RFCAnchor: "term-btype",
+		},
+	}
+	if block.Dynamic != nil {
+		header := block.Dynamic
+		nodes = append(nodes,
+			encodingNode{
+				Label: headerLabel(block.ID, "hlit"), Name: "HLIT", BlockID: block.ID,
+				Text:      fmt.Sprintf("%-15s # HLIT %d", mustBitString(trace, header.HLIT), header.NumLiteralLengths),
+				RFCAnchor: "term-hlit",
+			},
+			encodingNode{
+				Label: headerLabel(block.ID, "hdist"), Name: "HDIST", BlockID: block.ID,
+				Text:      fmt.Sprintf("%-15s # HDIST %d", mustBitString(trace, header.HDIST), header.NumDistanceLengths),
+				RFCAnchor: "term-hdist",
+			},
+			encodingNode{
+				Label: headerLabel(block.ID, "hclen"), Name: "HCLEN", BlockID: block.ID,
+				Text:      fmt.Sprintf("%-15s # HCLEN %d", mustBitString(trace, header.HCLEN), header.NumCodeLengths),
+				RFCAnchor: "term-hclen",
+			},
+		)
+	}
+	if block.Kind == deflate.StoredBlock && block.Header.Len() >= 32 {
+		lengthStart := block.Header.End - 32
+		nodes = append(nodes,
+			encodingNode{
+				Label: headerLabel(block.ID, "len"), Name: "LEN", BlockID: block.ID,
+				Text:      fmt.Sprintf("%-15s # LEN %d", mustBitString(trace, deflate.BitRange{Start: lengthStart, End: lengthStart + 16}), block.Output.Len()),
+				RFCAnchor: "term-len",
+			},
+			encodingNode{
+				Label: headerLabel(block.ID, "nlen"), Name: "NLEN", BlockID: block.ID,
+				Text:      fmt.Sprintf("%-15s # NLEN complement", mustBitString(trace, deflate.BitRange{Start: lengthStart + 16, End: lengthStart + 32})),
+				RFCAnchor: "term-nlen",
+			},
+		)
+	}
+	return nodes
 }
 
 func (n encodingNode) isSymbol() bool { return n.Alphabet != "" }
@@ -252,6 +312,9 @@ func slotRange(header *deflate.DynamicHeader, start, end int) string {
 
 func litlenLabel(block, symbol int) string   { return fmt.Sprintf("@b%d.litlen.%d", block, symbol) }
 func distanceLabel(block, symbol int) string { return fmt.Sprintf("@b%d.distance.%d", block, symbol) }
+func headerLabel(block int, field string) string {
+	return fmt.Sprintf("@b%d.header.%s", block, field)
+}
 func lengthSlotLabel(block int, alphabet string, symbol int) string {
 	return fmt.Sprintf("@b%d.%s.lengths.%d", block, alphabet, symbol)
 }

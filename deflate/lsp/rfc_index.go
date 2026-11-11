@@ -30,6 +30,11 @@ var rfcAnchors = func() map[string]rfcAnchor {
 		"term-hlit":           rfcLineAnchor(722, 726, 723, 23, 27),
 		"term-hdist":          rfcLineAnchor(722, 726, 724, 23, 28),
 		"term-hclen":          rfcLineAnchor(722, 737, 725, 23, 28),
+		"term-len":            rfcLineAnchor(575, 587, 585, 9, 12),
+		"term-nlen":           rfcLineAnchor(575, 587, 585, 56, 60),
+		"repeat-extra-16":     rfcLineAnchor(700, 706, 702, 32, 38),
+		"repeat-extra-17":     rfcLineAnchor(707, 709, 708, 24, 30),
+		"repeat-extra-18":     rfcLineAnchor(709, 711, 710, 24, 30),
 		"section-3.2.1":       rfcLineAnchor(312, 370, 312, 6, 11),
 		"section-3.2.2":       rfcLineAnchor(371, 488, 371, 6, 11),
 		"section-3.2.3":       rfcLineAnchor(489, 574, 489, 6, 11),
@@ -164,4 +169,7 @@ func lengthExtraRFCAnchor(symbol int) string {
 }
 func distanceExtraRFCAnchor(symbol int) string {
 	return fmt.Sprintf("distance-extra-%d", symbol)
+}
+func codeLengthExtraRFCAnchor(symbol int) string {
+	return fmt.Sprintf("repeat-extra-%d", symbol)
 }

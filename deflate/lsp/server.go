@@ -251,7 +251,11 @@ func (s *Server) handle(method string, raw json.RawMessage) (any, error) {
 		if doc, node, ok, err := s.encodingAt(raw); err != nil {
 			return nil, err
 		} else if ok {
-			link, found, linkErr := s.encodingDefinition(doc, node)
+			at, positionErr := requestPosition(raw)
+			if positionErr != nil {
+				return nil, positionErr
+			}
+			link, found, linkErr := s.encodingDefinition(doc, node, at)
 			if linkErr != nil {
 				return nil, linkErr
 			}
@@ -397,6 +401,22 @@ func (s *Server) handle(method string, raw json.RawMessage) (any, error) {
 		}
 		return calls, nil
 	case "textDocument/hover":
+		if _, origin, anchorName, ok, err := s.rfcTermRequest(raw); err != nil {
+			return nil, err
+		} else if ok {
+			return map[string]any{
+				"contents": map[string]any{"kind": "markdown", "value": rfcHover(anchorName)},
+				"range":    origin,
+			}, nil
+		}
+		if doc, node, ok, err := s.encodingAt(raw); err != nil {
+			return nil, err
+		} else if ok {
+			return map[string]any{
+				"contents": map[string]any{"kind": "markdown", "value": doc.encodingHover(node)},
+				"range":    doc.encodingSelection(node),
+			}, nil
+		}
 		if doc, entry, ok, err := s.tarEntryAt(raw); err != nil {
 			return nil, err
 		} else if ok {
@@ -541,6 +561,24 @@ func (s *Server) rfcDefinitionAt(raw json.RawMessage) (locationLink, bool, bool,
 		TargetRange:          anchor.TargetRange,
 		TargetSelectionRange: anchor.Selection,
 	}, true, true, nil
+}
+
+func (s *Server) rfcTermRequest(raw json.RawMessage) (*document, lspRange, string, bool, error) {
+	var params struct {
+		TextDocument struct {
+			URI string `json:"uri"`
+		} `json:"textDocument"`
+		Position position `json:"position"`
+	}
+	if err := json.Unmarshal(raw, &params); err != nil {
+		return nil, lspRange{}, "", false, err
+	}
+	doc, ok := s.docs[params.TextDocument.URI]
+	if !ok || doc.rfcLines == nil {
+		return nil, lspRange{}, "", false, nil
+	}
+	origin, anchor, ok := doc.rfcTermAt(params.Position)
+	return doc, origin, anchor, ok, nil
 }
 
 func containsPosition(r lspRange, p position) bool {
@@ -868,7 +906,18 @@ func (s *Server) encodingLink(originDoc *document, origin lspRange, label string
 	}, true, nil
 }
 
-func (s *Server) encodingDefinition(d *document, node encodingNode) (locationLink, bool, error) {
+func (s *Server) encodingDefinition(d *document, node encodingNode, at position) (locationLink, bool, error) {
+	tokens := d.encodingTok[node.Label]
+	if node.Alphabet == "length-program" && containsPosition(tokens.Extra, at) {
+		if node.BlockID >= 0 && node.BlockID < len(d.trace.Blocks) {
+			block := d.trace.Blocks[node.BlockID]
+			if block.Dynamic != nil && node.Symbol >= 0 && node.Symbol < len(block.Dynamic.LengthRuns) {
+				anchor := codeLengthExtraRFCAnchor(block.Dynamic.LengthRuns[node.Symbol].Symbol)
+				link, ok := d.rfcLink(tokens.Extra, anchor)
+				return link, ok, nil
+			}
+		}
+	}
 	origin := d.encodingSelection(node)
 	if node.Parent != "" {
 		return s.encodingLink(d, origin, node.Parent)
@@ -926,7 +975,7 @@ func (s *Server) symbolDocument(traceDoc *document, node encodingNode) (*documen
 		}
 		s.generatedDir = dir
 	}
-	path := filepath.Join(s.generatedDir, fmt.Sprintf("block-%d-%s.gzsym", node.BlockID, node.Alphabet))
+	path := filepath.Join(s.generatedDir, fmt.Sprintf("block-%d-%x-%s.gzsym", node.BlockID, traceDoc.revision[:6], node.Alphabet))
 	uri := fileURI(path)
 	if doc, ok := s.docs[uri]; ok {
 		return doc, nil
@@ -951,6 +1000,9 @@ func (s *Server) symbolDocument(traceDoc *document, node encodingNode) (*documen
 }
 
 func (d *document) encodingSelection(node encodingNode) lspRange {
+	if tokens, ok := d.encodingTok[node.Label]; ok && tokens.Primary != (lspRange{}) {
+		return tokens.Primary
+	}
 	end := strings.IndexAny(node.Text, " \t")
 	if end < 0 {
 		end = len(node.Text)
@@ -959,6 +1011,30 @@ func (d *document) encodingSelection(node encodingNode) lspRange {
 		Start: position{Line: node.Line},
 		End:   position{Line: node.Line, Character: end},
 	}
+}
+
+func (d *document) encodingHover(node encodingNode) string {
+	name := node.Name
+	if name == "" {
+		name = strings.TrimPrefix(node.Label, "@")
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "**%s**  \nWire: `%s`", name, strings.TrimSpace(strings.SplitN(node.Text, "#", 2)[0]))
+	if parts := strings.SplitN(node.Text, "#", 2); len(parts) == 2 {
+		fmt.Fprintf(&b, "  \n%s", strings.TrimSpace(parts[1]))
+	}
+	if node.Parent != "" {
+		fmt.Fprintf(&b, "  \nDefined by: `%s`", node.Parent)
+	} else if node.RFCAnchor != "" {
+		fmt.Fprintf(&b, "  \nTerminal definition: RFC 1951")
+	}
+	return b.String()
+}
+
+func rfcHover(anchorName string) string {
+	name := strings.TrimPrefix(anchorName, "term-")
+	name = strings.TrimPrefix(name, "section-")
+	return fmt.Sprintf("**RFC 1951 · %s**  \nGo to Definition jumps to the canonical definition.", strings.ToUpper(name))
 }
 
 // implementations returns the concrete literal and stored operations from

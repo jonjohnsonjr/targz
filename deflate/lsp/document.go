@@ -5,6 +5,7 @@ package lsp
 import (
 	"bufio"
 	"bytes"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -33,6 +34,7 @@ type document struct {
 	uri          string
 	meta         metadata
 	trace        *deflate.Trace
+	revision     [sha256.Size]byte
 	end          position
 	lineOp       map[int]int
 	opLine       map[int]int
@@ -41,6 +43,7 @@ type document struct {
 	tar          map[int]tarEntry
 	encoding     map[string]encodingNode
 	encodingLine map[int]string
+	encodingTok  map[string]encodingTokens
 	literalDefs  map[int]string
 	lengthDefs   map[int]string
 	distanceDefs map[int]string
@@ -60,6 +63,11 @@ type opTokens struct {
 	Backref        lspRange
 	Output         lspRange
 	Seed           lspRange
+}
+
+type encodingTokens struct {
+	Primary lspRange
+	Extra   lspRange
 }
 
 // DisassembleFile parses source and renders the stable, one-operation-per-line
@@ -152,7 +160,7 @@ func openDocument(uri, text string) *document {
 	doc := &document{
 		uri: uri, lineOp: make(map[int]int), opLine: make(map[int]int),
 		lineLen: make(map[int]int), tokens: make(map[int]opTokens), tar: make(map[int]tarEntry),
-		encoding: make(map[string]encodingNode), encodingLine: make(map[int]string), literalDefs: make(map[int]string),
+		encoding: make(map[string]encodingNode), encodingLine: make(map[int]string), encodingTok: make(map[string]encodingTokens), literalDefs: make(map[int]string),
 		lengthDefs: make(map[int]string), distanceDefs: make(map[int]string),
 	}
 	opText := make(map[int]string)
@@ -204,6 +212,7 @@ func openDocument(uri, text string) *document {
 		doc.loadErr = err
 		return doc
 	}
+	doc.revision = sha256.Sum256(data)
 	doc.trace, doc.loadErr = parse(data, doc.meta.Raw)
 	if doc.loadErr == nil && doc.meta.View == "trace" {
 		if nextOp != len(doc.trace.Ops) {
@@ -236,6 +245,7 @@ func openDocument(uri, text string) *document {
 			node.Line = definitionLines[i]
 			doc.encoding[node.Label] = node
 			doc.encodingLine[node.Line] = node.Label
+			doc.encodingTok[node.Label] = encodingTokenRanges(node.Text, node.Line)
 		}
 	}
 	if doc.loadErr == nil && doc.meta.View == "symbols" {
@@ -247,6 +257,7 @@ func openDocument(uri, text string) *document {
 			node.Line = node.Symbol
 			doc.encoding[node.Label] = node
 			doc.encodingLine[node.Line] = node.Label
+			doc.encodingTok[node.Label] = encodingTokenRanges(node.Text, node.Line)
 		}
 	}
 	if doc.loadErr == nil && doc.meta.View == "tar" {
@@ -261,6 +272,15 @@ func openDocument(uri, text string) *document {
 		}
 	}
 	return doc
+}
+
+func encodingTokenRanges(text string, line int) encodingTokens {
+	end := strings.IndexAny(text, " \t")
+	if end < 0 {
+		end = len(text)
+	}
+	primary, extra := operandTokenRanges(text, line, 0, end)
+	return encodingTokens{Primary: primary, Extra: extra}
 }
 
 func openRFCDocument(uri, text string) *document {
