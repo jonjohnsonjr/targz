@@ -116,8 +116,8 @@ func TestFixedLiteralDefinitionJumpsToRFCTable(t *testing.T) {
 	wantLines := []string{
 		"# DEFLATE trace · gd: value → code → header → RFC 1951",
 		"block 0 bits[0.0:2.2] # fixed",
-		"%0  01110001        # 'A' → out[0:1]",
-		"@b0.litlen.65      01110001        # 'A'",
+		"01110001  # 'A'",
+		"01110001        # 'A'",
 	}
 	for _, want := range wantLines {
 		if !bytes.Contains(listing, []byte(want)) {
@@ -150,10 +150,14 @@ func TestFixedLiteralDefinitionJumpsToRFCTable(t *testing.T) {
 }
 
 func definitionLinksAt(t testing.TB, s *Server, uri string, line int) []locationLink {
+	return definitionLinksAtCharacter(t, s, uri, line, 1)
+}
+
+func definitionLinksAtCharacter(t testing.TB, s *Server, uri string, line, character int) []locationLink {
 	t.Helper()
 	params, err := json.Marshal(map[string]any{
 		"textDocument": map[string]any{"uri": uri},
-		"position":     map[string]any{"line": line, "character": 1},
+		"position":     map[string]any{"line": line, "character": character},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -163,6 +167,90 @@ func definitionLinksAt(t testing.TB, s *Server, uri string, line int) []location
 		t.Fatal(err)
 	}
 	return result.([]locationLink)
+}
+
+func TestMatchOperandsHaveIndependentDefinitions(t *testing.T) {
+	input := bytes.Repeat([]byte("abc"), 1000)
+	var compressed bytes.Buffer
+	w, err := flate.NewWriter(&compressed, flate.BestCompression)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.Write(input); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	source := filepath.Join(t.TempDir(), "matches.deflate")
+	if err := os.WriteFile(source, compressed.Bytes(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	listing, err := DisassembleFileView(source, true, "trace")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	const uri = "file:///matches.deflate"
+	s := NewServer(bytes.NewReader(nil), &bytes.Buffer{})
+	doc := openDocument(uri, string(listing))
+	s.docs[uri] = doc
+	if doc.loadErr != nil {
+		t.Fatal(doc.loadErr)
+	}
+	matchID := -1
+	for _, op := range doc.trace.Ops {
+		if op.Kind == deflate.MatchOp {
+			matchID = op.ID
+			break
+		}
+	}
+	if matchID < 0 {
+		t.Fatal("fixture contains no match")
+	}
+	tokens := doc.tokens[matchID]
+	for name, token := range map[string]lspRange{"length": tokens.Length, "distance": tokens.Distance, "backreference": tokens.Backref} {
+		if token.Start == token.End {
+			t.Fatalf("%s token is empty", name)
+		}
+	}
+
+	length := definitionLinksAtCharacter(t, s, uri, tokens.Length.Start.Line, tokens.Length.Start.Character)
+	if len(length) != 1 || doc.encodingLine[length[0].TargetSelectionRange.Start.Line] != doc.lengthDefs[matchID] {
+		t.Fatalf("length definition = %#v, want %q", length, doc.lengthDefs[matchID])
+	}
+	distance := definitionLinksAtCharacter(t, s, uri, tokens.Distance.Start.Line, tokens.Distance.Start.Character)
+	if len(distance) != 1 || doc.encodingLine[distance[0].TargetSelectionRange.Start.Line] != doc.distanceDefs[matchID] {
+		t.Fatalf("distance definition = %#v, want %q", distance, doc.distanceDefs[matchID])
+	}
+	for name, first := range map[string]locationLink{"length": length[0], "distance": distance[0]} {
+		link := first
+		for depth := 0; depth < 6 && link.TargetURI == uri; depth++ {
+			links := definitionLinksAtCharacter(t, s, uri,
+				link.TargetSelectionRange.Start.Line, link.TargetSelectionRange.Start.Character)
+			if len(links) != 1 {
+				t.Fatalf("%s definition depth %d = %#v, want one parent", name, depth, links)
+			}
+			link = links[0]
+		}
+		if !strings.HasSuffix(link.TargetURI, "/doc/rfc1951.txt") {
+			t.Fatalf("%s definitions terminate at %q, want RFC 1951", name, link.TargetURI)
+		}
+	}
+	backref := definitionLinksAtCharacter(t, s, uri, tokens.Backref.Start.Line, tokens.Backref.Start.Character)
+	if len(backref) == 0 {
+		t.Fatal("backreference comment has no producer definitions")
+	}
+	for _, link := range backref {
+		if _, ok := doc.lineOp[link.TargetSelectionRange.Start.Line]; !ok {
+			t.Fatalf("backreference target is not an operation: %#v", link)
+		}
+	}
+
+	lineText := strings.Split(string(listing), "\n")[doc.opLine[matchID]]
+	if strings.HasPrefix(lineText, "%") || !strings.Contains(lineText, "  # ←") {
+		t.Fatalf("match line = %q, want line-number identity and compact backreference comment", lineText)
+	}
 }
 
 func TestAutoViewDetectsTarAndExposesEntries(t *testing.T) {
@@ -208,7 +296,7 @@ func TestAutoViewDetectsTarAndExposesEntries(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !bytes.Contains(traceListing, []byte("%0")) || bytes.Contains(traceListing, []byte(`"view":"tar"`)) {
+	if !bytes.Contains(traceListing, []byte("block 0 bits[")) || bytes.Contains(traceListing, []byte(`"view":"tar"`)) {
 		t.Fatalf("forced trace listing:\n%s", traceListing[:min(len(traceListing), 500)])
 	}
 
@@ -326,7 +414,13 @@ func TestCallHierarchyFollowsDeflateDependencies(t *testing.T) {
 		t.Fatalf("producer incoming calls = %#v, want match %d", incoming, matchID)
 	}
 
-	result, err = s.handle("textDocument/definition", prepareParams)
+	definitionParams, _ := json.Marshal(map[string]any{
+		"textDocument": map[string]any{"uri": uri},
+		"position": map[string]any{
+			"line": doc.tokens[matchID].Backref.Start.Line, "character": doc.tokens[matchID].Backref.Start.Character,
+		},
+	})
+	result, err = s.handle("textDocument/definition", definitionParams)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -389,17 +483,17 @@ func TestCallHierarchyFollowsDeflateDependencies(t *testing.T) {
 }
 
 func TestOpTokenRangesUseUTF16Positions(t *testing.T) {
-	line := "%1  101 # 'é' → out[0:1]"
-	tokens := opTokenRanges(line, 7)
+	line := "101  # 'é'"
+	tokens := opTokenRanges(line, 7, deflate.Op{Kind: deflate.LiteralOp})
 	// The UTF-8 encoding of é occupies two bytes but one UTF-16 code unit.
-	if got, want := tokens.Output.Start.Character, len([]rune("%1  101 # 'é' → ")); got != want {
-		t.Fatalf("output token starts at UTF-16 character %d, want %d", got, want)
+	if got, want := tokens.Literal.Start.Character, len([]rune("101  # ")); got != want {
+		t.Fatalf("literal token starts at UTF-16 character %d, want %d", got, want)
 	}
-	if tokens.Output.Start.Line != 7 || tokens.Output.End.Line != 7 {
-		t.Fatalf("output token line = %d:%d, want 7:7", tokens.Output.Start.Line, tokens.Output.End.Line)
+	if tokens.Literal.Start.Line != 7 || tokens.Literal.End.Line != 7 {
+		t.Fatalf("literal token line = %d:%d, want 7:7", tokens.Literal.Start.Line, tokens.Literal.End.Line)
 	}
-	if tokens.Literal.Start.Character >= tokens.Literal.End.Character {
-		t.Fatalf("literal token is empty: %#v", tokens.Literal)
+	if got := tokens.Literal.End.Character - tokens.Literal.Start.Character; got != 3 {
+		t.Fatalf("literal token is %d UTF-16 units, want 3", got)
 	}
 }
 

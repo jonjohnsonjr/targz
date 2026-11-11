@@ -117,6 +117,32 @@ func TestOverlappingMatchProvenance(t *testing.T) {
 	}
 }
 
+func TestMatchRetainsLengthAndDistanceSymbols(t *testing.T) {
+	trace, err := ParseRaw(rawDeflate(t, bytes.Repeat([]byte("abc"), 1000), flate.BestCompression))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, op := range trace.Ops {
+		if op.Kind != MatchOp {
+			continue
+		}
+		if op.LengthSymbol < 257 || op.LengthSymbol > 285 {
+			t.Fatalf("length symbol = %d, want 257-285", op.LengthSymbol)
+		}
+		if op.DistanceSymbol < 0 || op.DistanceSymbol > 29 {
+			t.Fatalf("distance symbol = %d, want 0-29", op.DistanceSymbol)
+		}
+		if op.SymbolBits.End != op.LengthExtraBits.Start ||
+			op.LengthExtraBits.End != op.DistanceBits.Start ||
+			op.DistanceBits.End != op.DistanceExtraBits.Start ||
+			op.DistanceExtraBits.End != op.Input.End {
+			t.Fatalf("match spans are not contiguous: %#v", op)
+		}
+		return
+	}
+	t.Fatal("fixture contains no match")
+}
+
 func TestParseConcatenatedGzip(t *testing.T) {
 	var compressed bytes.Buffer
 	w := gzip.NewWriter(&compressed)

@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"strings"
 
 	"github.com/jonjohnsonjr/targz/deflate"
 )
@@ -23,44 +22,75 @@ type encodingNode struct {
 }
 
 type encodingGraph struct {
-	Nodes       []encodingNode
-	LiteralDefs map[int]string
+	Nodes        []encodingNode
+	LiteralDefs  map[int]string
+	LengthDefs   map[int]string
+	DistanceDefs map[int]string
 }
 
 func buildEncodingGraph(trace *deflate.Trace) encodingGraph {
-	graph := encodingGraph{LiteralDefs: make(map[int]string)}
-	used := make(map[int]map[int]struct{})
+	graph := encodingGraph{
+		LiteralDefs: make(map[int]string), LengthDefs: make(map[int]string), DistanceDefs: make(map[int]string),
+	}
+	type symbols struct {
+		litlen   map[int]struct{}
+		distance map[int]struct{}
+	}
+	used := make(map[int]*symbols)
 	for _, op := range trace.Ops {
-		if op.Kind != deflate.LiteralOp {
-			continue
-		}
 		if used[op.BlockID] == nil {
-			used[op.BlockID] = make(map[int]struct{})
+			used[op.BlockID] = &symbols{litlen: make(map[int]struct{}), distance: make(map[int]struct{})}
 		}
-		used[op.BlockID][int(op.Literal)] = struct{}{}
-		graph.LiteralDefs[op.ID] = litlenLabel(op.BlockID, int(op.Literal))
+		switch op.Kind {
+		case deflate.LiteralOp:
+			used[op.BlockID].litlen[int(op.Literal)] = struct{}{}
+			graph.LiteralDefs[op.ID] = litlenLabel(op.BlockID, int(op.Literal))
+		case deflate.MatchOp:
+			used[op.BlockID].litlen[op.LengthSymbol] = struct{}{}
+			used[op.BlockID].distance[op.DistanceSymbol] = struct{}{}
+			graph.LengthDefs[op.ID] = litlenLabel(op.BlockID, op.LengthSymbol)
+			graph.DistanceDefs[op.ID] = distanceLabel(op.BlockID, op.DistanceSymbol)
+		}
 	}
 
 	for _, block := range trace.Blocks {
 		symbolSet := used[block.ID]
-		if len(symbolSet) == 0 || block.LiteralTable == nil {
+		if symbolSet == nil {
 			continue
 		}
-		symbols := sortedKeys(symbolSet)
 		neededRuns := make(map[int]struct{})
-		for _, symbol := range symbols {
+		for _, symbol := range sortedKeys(symbolSet.litlen) {
 			code, ok := huffmanCode(block.LiteralTable, symbol)
 			if !ok {
 				continue
 			}
 			node := encodingNode{
 				Label: litlenLabel(block.ID, symbol), BlockID: block.ID,
-				Text: fmt.Sprintf("%-15s # %s", codeString(code), quoteByte(byte(symbol))),
+				Text: fmt.Sprintf("%-15s # %s", codeString(code), litlenMeaning(symbol)),
 			}
 			if block.Kind == deflate.FixedBlock {
 				node.RFCStart, node.RFCEnd, node.RFCSelect = 654, 670, fixedRFCLine(symbol)
 			} else if block.Kind == deflate.DynamicBlock && block.Dynamic != nil {
 				if run := lengthRunForSlot(block.Dynamic, symbol); run >= 0 {
+					node.Parent = lengthRunLabel(block.ID, run)
+					neededRuns[run] = struct{}{}
+				}
+			}
+			graph.Nodes = append(graph.Nodes, node)
+		}
+		for _, symbol := range sortedKeys(symbolSet.distance) {
+			code, ok := huffmanCode(block.DistanceTable, symbol)
+			if !ok {
+				continue
+			}
+			node := encodingNode{
+				Label: distanceLabel(block.ID, symbol), BlockID: block.ID,
+				Text: fmt.Sprintf("%-15s # %s", codeString(code), distanceMeaning(symbol)),
+			}
+			if block.Kind == deflate.FixedBlock {
+				node.RFCStart, node.RFCEnd, node.RFCSelect = 678, 688, 684
+			} else if block.Kind == deflate.DynamicBlock && block.Dynamic != nil {
+				if run := lengthRunForSlot(block.Dynamic, block.Dynamic.NumLiteralLengths+symbol); run >= 0 {
 					node.Parent = lengthRunLabel(block.ID, run)
 					neededRuns[run] = struct{}{}
 				}
@@ -176,15 +206,69 @@ func slotRange(header *deflate.DynamicHeader, start, end int) string {
 }
 
 func litlenLabel(block, symbol int) string     { return fmt.Sprintf("@b%d.litlen.%d", block, symbol) }
+func distanceLabel(block, symbol int) string   { return fmt.Sprintf("@b%d.distance.%d", block, symbol) }
 func lengthRunLabel(block, run int) string     { return fmt.Sprintf("@b%d.lengths.%d", block, run) }
 func codeLengthLabel(block, symbol int) string { return fmt.Sprintf("@b%d.codelen.%d", block, symbol) }
 func hclenLabel(block, field int) string       { return fmt.Sprintf("@b%d.hclen.%d", block, field) }
 
 func fixedRFCLine(symbol int) int {
-	if symbol <= 143 {
+	switch {
+	case symbol <= 143:
 		return 662
+	case symbol <= 255:
+		return 664
+	case symbol <= 279:
+		return 666
+	default:
+		return 668
 	}
-	return 664
+}
+
+var lengthBases = [...]int{
+	3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 15, 17, 19, 23, 27, 31,
+	35, 43, 51, 59, 67, 83, 99, 115, 131, 163, 195, 227, 258,
+}
+
+var lengthExtras = [...]uint8{
+	0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2,
+	3, 3, 3, 3, 4, 4, 4, 4, 5, 5, 5, 5, 0,
+}
+
+var distanceBases = [...]int{
+	1, 2, 3, 4, 5, 7, 9, 13, 17, 25, 33, 49, 65, 97, 129, 193,
+	257, 385, 513, 769, 1025, 1537, 2049, 3073, 4097, 6145, 8193, 12289, 16385, 24577,
+}
+
+var distanceExtras = [...]uint8{
+	0, 0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6,
+	7, 7, 8, 8, 9, 9, 10, 10, 11, 11, 12, 12, 13, 13,
+}
+
+func litlenMeaning(symbol int) string {
+	switch {
+	case symbol < 256:
+		return quoteByte(byte(symbol))
+	case symbol == 256:
+		return "end"
+	case symbol <= 285:
+		return valueRange("length", lengthBases[symbol-257], lengthExtras[symbol-257])
+	default:
+		return fmt.Sprintf("reserved %d", symbol)
+	}
+}
+
+func distanceMeaning(symbol int) string {
+	if symbol < 0 || symbol >= len(distanceBases) {
+		return fmt.Sprintf("reserved %d", symbol)
+	}
+	return valueRange("distance", distanceBases[symbol], distanceExtras[symbol])
+}
+
+func valueRange(kind string, base int, extra uint8) string {
+	if extra == 0 {
+		return fmt.Sprintf("%s %d", kind, base)
+	}
+	return fmt.Sprintf("%s %d-%d", kind, base, base+(1<<extra)-1)
 }
 
 func locateRFC1951(source string) string {
@@ -223,14 +307,4 @@ func locateRFC1951(source string) string {
 
 func fileURI(path string) string {
 	return (&url.URL{Scheme: "file", Path: filepath.ToSlash(path)}).String()
-}
-
-func encodingLabel(line string) string {
-	if !strings.HasPrefix(line, "@b") {
-		return ""
-	}
-	if end := strings.IndexAny(line, " \t"); end >= 0 {
-		return line[:end]
-	}
-	return line
 }

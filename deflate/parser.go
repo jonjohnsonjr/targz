@@ -243,6 +243,8 @@ func (p *parser) compressedBlock(block *Block, lit, dist *decoderTable, historyB
 				Output:            OutRange{Start: start, End: OutPos(len(p.trace.Output))},
 				Length:            length,
 				Distance:          distanceValue,
+				LengthSymbol:      symbol,
+				DistanceSymbol:    distanceSymbol,
 				SymbolBits:        symbolBits,
 				LengthExtraBits:   lengthExtraBits,
 				DistanceBits:      distanceBits,

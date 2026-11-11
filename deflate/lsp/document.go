@@ -39,13 +39,19 @@ type document struct {
 	encoding     map[string]encodingNode
 	encodingLine map[int]string
 	literalDefs  map[int]string
+	lengthDefs   map[int]string
+	distanceDefs map[int]string
 	loadErr      error
 }
 
 type opTokens struct {
-	Output  lspRange
-	Seed    lspRange
-	Literal lspRange
+	Bits     lspRange
+	Literal  lspRange
+	Length   lspRange
+	Distance lspRange
+	Backref  lspRange
+	Output   lspRange
+	Seed     lspRange
 }
 
 // DisassembleFile parses source and renders the stable, one-operation-per-line
@@ -108,24 +114,21 @@ func disassembleView(source string, raw bool, trace *deflate.Trace, requested st
 	for _, block := range trace.Blocks {
 		fmt.Fprintf(&out, "block %d bits[%s:%s] # %s\n", block.ID, block.Input.Start, block.Input.End, block.Kind)
 		for _, op := range trace.Ops[block.FirstOp : block.FirstOp+block.NumOps] {
-			wire, _ := trace.BitString(op.Input)
 			switch op.Kind {
 			case deflate.LiteralOp:
-				fmt.Fprintf(&out, "%%%d  %-15s # %s → out[%d:%d]\n",
-					op.ID, wire, quoteByte(op.Literal), op.Output.Start, op.Output.End)
+				fmt.Fprintf(&out, "%s  # %s\n", mustBitString(trace, op.SymbolBits), quoteByte(op.Literal))
 			case deflate.StoredOp:
-				fmt.Fprintf(&out, "%%%d  stored %d bytes # out[%d:%d]\n",
-					op.ID, op.Length, op.Output.Start, op.Output.End)
+				fmt.Fprintf(&out, "stored %d bytes\n", op.Length)
 			case deflate.MatchOp:
-				seed, _ := op.Seed()
-				fmt.Fprintf(&out, "%%%d  %-15s # out[%d:%d] ← seed[%d:%d] ×%d\n",
-					op.ID, wire, op.Output.Start, op.Output.End, seed.Start, seed.End, op.Length)
+				fmt.Fprintf(&out, "%s  %s  # ←%d ×%d\n",
+					codedOperand(trace, op.SymbolBits, op.LengthExtraBits),
+					codedOperand(trace, op.DistanceBits, op.DistanceExtraBits), op.Distance, op.Length)
 			}
 		}
 		out.WriteString("\n# definitions\n")
 		for _, node := range graph.Nodes {
 			if node.BlockID == block.ID {
-				fmt.Fprintf(&out, "%-18s %s\n", node.Label, node.Text)
+				fmt.Fprintf(&out, "%s\n", node.Text)
 			}
 		}
 		out.WriteByte('\n')
@@ -139,10 +142,14 @@ func openDocument(uri, text string) *document {
 		uri: uri, lineOp: make(map[int]int), opLine: make(map[int]int),
 		lineLen: make(map[int]int), tokens: make(map[int]opTokens), tar: make(map[int]tarEntry),
 		encoding: make(map[string]encodingNode), encodingLine: make(map[int]string), literalDefs: make(map[int]string),
+		lengthDefs: make(map[int]string), distanceDefs: make(map[int]string),
 	}
-	encodedLines := make(map[string]int)
+	opText := make(map[int]string)
+	var definitionLines []int
 	scanner := bufio.NewScanner(strings.NewReader(text))
 	line := 0
+	nextOp := 0
+	inOps, inDefinitions := false, false
 	foundMeta := false
 	for scanner.Scan() {
 		value := scanner.Text()
@@ -154,20 +161,17 @@ func openDocument(uri, text string) *document {
 			}
 			foundMeta = true
 		}
-		if strings.HasPrefix(value, "%") {
-			end := strings.IndexAny(value, " \t")
-			if end < 0 {
-				end = len(value)
-			}
-			id, err := strconv.Atoi(value[1:end])
-			if err == nil {
-				doc.lineOp[line] = id
-				doc.opLine[id] = line
-				doc.tokens[id] = opTokenRanges(value, line)
-			}
-		}
-		if label := encodingLabel(value); label != "" {
-			encodedLines[label] = line
+		if strings.HasPrefix(value, "block ") {
+			inOps, inDefinitions = true, false
+		} else if value == "# definitions" {
+			inOps, inDefinitions = false, true
+		} else if value != "" && inOps {
+			doc.lineOp[line] = nextOp
+			doc.opLine[nextOp] = line
+			opText[nextOp] = value
+			nextOp++
+		} else if value != "" && inDefinitions && !strings.HasPrefix(value, "#") {
+			definitionLines = append(definitionLines, line)
 		}
 		line++
 	}
@@ -191,14 +195,25 @@ func openDocument(uri, text string) *document {
 	}
 	doc.trace, doc.loadErr = parse(data, doc.meta.Raw)
 	if doc.loadErr == nil && doc.meta.View == "trace" {
+		if nextOp != len(doc.trace.Ops) {
+			doc.loadErr = fmt.Errorf("trace listing has %d operation lines, want %d", nextOp, len(doc.trace.Ops))
+			return doc
+		}
+		for id, value := range opText {
+			doc.tokens[id] = opTokenRanges(value, doc.opLine[id], doc.trace.Ops[id])
+		}
 		graph := buildEncodingGraph(doc.trace)
 		doc.literalDefs = graph.LiteralDefs
-		for _, node := range graph.Nodes {
-			if line, ok := encodedLines[node.Label]; ok {
-				node.Line = line
-				doc.encoding[node.Label] = node
-				doc.encodingLine[line] = node.Label
-			}
+		doc.lengthDefs = graph.LengthDefs
+		doc.distanceDefs = graph.DistanceDefs
+		if len(definitionLines) != len(graph.Nodes) {
+			doc.loadErr = fmt.Errorf("trace listing has %d definition lines, want %d", len(definitionLines), len(graph.Nodes))
+			return doc
+		}
+		for i, node := range graph.Nodes {
+			node.Line = definitionLines[i]
+			doc.encoding[node.Label] = node
+			doc.encodingLine[node.Line] = node.Label
 		}
 	}
 	if doc.loadErr == nil && doc.meta.View == "tar" {
@@ -215,47 +230,47 @@ func openDocument(uri, text string) *document {
 	return doc
 }
 
-func opTokenRanges(line string, lineNumber int) opTokens {
-	return opTokens{
-		Output:  tokenRange(line, lineNumber, "out["),
-		Seed:    tokenRange(line, lineNumber, "seed["),
-		Literal: literalTokenRange(line, lineNumber),
+func codedOperand(trace *deflate.Trace, symbol, extra deflate.BitRange) string {
+	value := mustBitString(trace, symbol)
+	if extra.Len() != 0 {
+		value += "·" + mustBitString(trace, extra)
 	}
+	return value
 }
 
-func literalTokenRange(line string, lineNumber int) lspRange {
-	const prefix = "# "
-	start := strings.Index(line, prefix)
-	if start < 0 {
-		return lspRange{}
+func opTokenRanges(line string, lineNumber int, op deflate.Op) opTokens {
+	comment := strings.Index(line, "  # ")
+	if comment < 0 {
+		comment = len(line)
 	}
-	start += len(prefix)
-	if start >= len(line) || line[start] != '\'' {
-		return lspRange{}
+	switch op.Kind {
+	case deflate.LiteralOp:
+		bits := byteRange(line, lineNumber, 0, comment)
+		return opTokens{
+			Bits:    bits,
+			Literal: byteRange(line, lineNumber, min(comment+4, len(line)), len(line)),
+			Output:  bits,
+		}
+	case deflate.MatchOp:
+		separator := strings.Index(line[:comment], "  ")
+		if separator < 0 {
+			return opTokens{}
+		}
+		distanceStart := separator + 2
+		backref := byteRange(line, lineNumber, min(comment+4, len(line)), len(line))
+		return opTokens{
+			Length:   byteRange(line, lineNumber, 0, separator),
+			Distance: byteRange(line, lineNumber, distanceStart, comment),
+			Backref:  backref,
+			Output:   backref,
+			Seed:     backref,
+		}
+	case deflate.StoredOp:
+		whole := byteRange(line, lineNumber, 0, len(line))
+		return opTokens{Output: whole}
+	default:
+		return opTokens{}
 	}
-	end := strings.Index(line[start:], " → out[")
-	if end < 0 {
-		return lspRange{}
-	}
-	end += start
-	for end > start && line[end-1] == ' ' {
-		end--
-	}
-	return byteRange(line, lineNumber, start, end)
-}
-
-func tokenRange(line string, lineNumber int, prefix string) lspRange {
-	start := strings.Index(line, prefix)
-	if start < 0 {
-		return lspRange{}
-	}
-	end := strings.IndexByte(line[start:], ']')
-	if end < 0 {
-		return lspRange{}
-	}
-	end += start + 1
-	// LSP character offsets count UTF-16 code units rather than bytes.
-	return byteRange(line, lineNumber, start, end)
 }
 
 func byteRange(line string, lineNumber, start, end int) lspRange {

@@ -98,6 +98,10 @@ type Op struct {
 	Literal  byte
 	Length   int
 	Distance int
+	// LengthSymbol is the literal/length alphabet symbol (257-285) and
+	// DistanceSymbol is the distance alphabet symbol (0-29) for a match.
+	LengthSymbol   int
+	DistanceSymbol int
 
 	SymbolBits        BitRange
 	LengthExtraBits   BitRange

@@ -247,13 +247,36 @@ func (s *Server) handle(method string, raw json.RawMessage) (any, error) {
 		if err != nil || op == nil {
 			return nil, err
 		}
+		at, err := requestPosition(raw)
+		if err != nil {
+			return nil, err
+		}
 		if op.Kind == deflate.LiteralOp {
 			if label := doc.literalDefs[op.ID]; label != "" {
-				if link, ok := doc.encodingLink(doc.tokens[op.ID].Literal, label); ok {
+				origin := doc.tokens[op.ID].Bits
+				if containsPosition(doc.tokens[op.ID].Literal, at) {
+					origin = doc.tokens[op.ID].Literal
+				}
+				if link, ok := doc.encodingLink(origin, label); ok {
 					return []locationLink{link}, nil
 				}
 			}
 			return []locationLink{}, nil
+		}
+		if op.Kind == deflate.MatchOp {
+			tokens := doc.tokens[op.ID]
+			if containsPosition(tokens.Length, at) {
+				if link, ok := doc.encodingLink(tokens.Length, doc.lengthDefs[op.ID]); ok {
+					return []locationLink{link}, nil
+				}
+				return []locationLink{}, nil
+			}
+			if containsPosition(tokens.Distance, at) {
+				if link, ok := doc.encodingLink(tokens.Distance, doc.distanceDefs[op.ID]); ok {
+					return []locationLink{link}, nil
+				}
+				return []locationLink{}, nil
+			}
 		}
 		seed, ok := op.Seed()
 		if !ok {
@@ -438,6 +461,20 @@ func (s *Server) operationAt(raw json.RawMessage) (*document, *deflate.Op, error
 	}
 	op := doc.trace.Ops[id]
 	return doc, &op, nil
+}
+
+func requestPosition(raw json.RawMessage) (position, error) {
+	var params struct {
+		Position position `json:"position"`
+	}
+	if err := json.Unmarshal(raw, &params); err != nil {
+		return position{}, err
+	}
+	return params.Position, nil
+}
+
+func containsPosition(r lspRange, p position) bool {
+	return p.Line == r.Start.Line && p.Character >= r.Start.Character && p.Character < r.End.Character
 }
 
 func (s *Server) tarEntryAt(raw json.RawMessage) (*document, tarEntry, bool, error) {
@@ -714,7 +751,7 @@ func (d *document) location(id int) location {
 }
 
 func (d *document) link(originID, targetID int) locationLink {
-	origin := d.tokens[originID].Seed
+	origin := d.tokens[originID].Backref
 	if origin == (lspRange{}) {
 		origin = d.opRange(originID)
 	}
@@ -766,9 +803,13 @@ func (d *document) encodingDefinition(node encodingNode) (locationLink, bool) {
 }
 
 func (d *document) encodingSelection(node encodingNode) lspRange {
+	end := strings.IndexAny(node.Text, " \t")
+	if end < 0 {
+		end = len(node.Text)
+	}
 	return lspRange{
 		Start: position{Line: node.Line},
-		End:   position{Line: node.Line, Character: len(node.Label)},
+		End:   position{Line: node.Line, Character: end},
 	}
 }
 
