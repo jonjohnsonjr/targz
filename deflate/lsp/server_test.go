@@ -328,6 +328,20 @@ func TestMatchOperandsHaveIndependentDefinitions(t *testing.T) {
 		t.Fatalf("code-length table line %d = %q, want %q",
 			codeLength[0].TargetSelectionRange.Start.Line, label, programNode.Parent)
 	}
+	codeLengthNode := codeLengthDoc.encoding[programNode.Parent]
+	hclen := definitionLinksAtCharacter(t, s, codeLength[0].TargetURI,
+		codeLength[0].TargetSelectionRange.Start.Line, codeLength[0].TargetSelectionRange.Start.Character)
+	if len(hclen) != 1 || !strings.Contains(hclen[0].TargetURI, "hclen.gzsym") {
+		t.Fatalf("code-length symbol parent = %#v, want HCLEN vector", hclen)
+	}
+	hclenDoc := s.docs[hclen[0].TargetURI]
+	hclenLine := hclen[0].TargetSelectionRange.Start.Line
+	if label := hclenDoc.encodingLine[hclenLine]; label != codeLengthNode.Parent {
+		t.Fatalf("HCLEN line %d = %q, want %q", hclenLine, label, codeLengthNode.Parent)
+	}
+	if hclenDoc.encoding[codeLengthNode.Parent].Symbol != hclenLine {
+		t.Fatalf("HCLEN target line %d is not its transmission index", hclenLine)
+	}
 	for name, first := range map[string]locationLink{"length": length[0], "distance": distance[0]} {
 		link := first
 		for depth := 0; depth < 6 && !strings.HasSuffix(link.TargetURI, "/doc/rfc1951.txt"); depth++ {

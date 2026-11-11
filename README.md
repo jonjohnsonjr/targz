@@ -109,20 +109,21 @@ code-length assignment, to the compact code-length program instruction which
 produced it, to the code-length Huffman table, to its raw three-bit HCLEN field.
 Each document is a semantic address space: the literal/length and distance
 assignment documents use the affected data symbol as their line, the compact
-program uses its instruction index, and the code-length table uses its decoded
-symbol from 0 through 18. Repeat codes 16–18 occur once in the compact program;
-finding references on that instruction returns every expanded slot it assigns.
-The final definition opens the vendored
+program uses its instruction index, the code-length table uses its decoded
+symbol from 0 through 18, and the HCLEN document uses the field's transmission
+index in the RFC-mandated permutation. Repeat codes 16–18 occur once in the
+compact program; finding references on that instruction returns every expanded
+slot it assigns. The final definition opens the vendored
 [`doc/rfc1951.txt`](doc/rfc1951.txt) at the governing table in §3.2.7.
 Fixed-Huffman literals take the shorter path from their generated table entry
 to the appropriate row of the §3.2.6 table.
 
-Huffman tables, expanded length assignments, and the compact length program
-open as generated `*.gzsym` documents. Their zero-based LSP line is the
-semantic address: literal/length symbol 257 and its assignment are line 257,
-program instruction 12 is line 12, and code-length symbol 18 is line 18.
-Neovim normally presents buffer lines as one-based, so give only this generated
-document type a semantic gutter:
+Huffman tables, expanded length assignments, the compact length program, and
+the HCLEN vector open as generated `*.gzsym` documents. Their zero-based LSP
+line is the semantic address: literal/length symbol 257 and its assignment are
+line 257, program instruction 12 is line 12, code-length symbol 18 is line 18,
+and HCLEN transmission slot 17 is line 17. Neovim normally presents buffer
+lines as one-based, so give only this generated document type a semantic gutter:
 
 ```lua
 vim.filetype.add({

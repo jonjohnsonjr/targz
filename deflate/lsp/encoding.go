@@ -141,27 +141,24 @@ func buildEncodingGraph(trace *deflate.Trace) encodingGraph {
 				Text: lengthRunText(trace, header, run),
 			})
 		}
-		neededFields := make(map[int]struct{})
 		for _, code := range block.CodeTable.Codes {
 			symbol := code.Symbol
 			field := codeLengthField(header, symbol)
 			if field < 0 {
 				continue
 			}
-			neededFields[field] = struct{}{}
 			graph.Nodes = append(graph.Nodes, encodingNode{
 				Label: codeLengthLabel(block.ID, symbol), Parent: hclenLabel(block.ID, field), BlockID: block.ID,
 				Alphabet: "codelen", Symbol: symbol,
 				Text: fmt.Sprintf("%-15s # length %d", codeString(code), symbol),
 			})
 		}
-		for _, fieldIndex := range sortedKeys(neededFields) {
-			field := header.CodeLengths[fieldIndex]
+		for fieldIndex, field := range header.CodeLengths {
 			wire, _ := trace.BitString(field.Input)
 			graph.Nodes = append(graph.Nodes, encodingNode{
 				Label: hclenLabel(block.ID, fieldIndex), BlockID: block.ID,
-				Text: fmt.Sprintf("%-15s # symbol %d: %d bits (HCLEN[%d])",
-					wire, field.Symbol, field.Length, fieldIndex),
+				Alphabet: "hclen", Symbol: fieldIndex,
+				Text:     fmt.Sprintf("%-15s # symbol %d: %d bits", wire, field.Symbol, field.Length),
 				RFCStart: 689, RFCEnd: 750, RFCSelect: 734,
 			})
 		}

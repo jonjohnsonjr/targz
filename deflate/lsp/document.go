@@ -273,6 +273,8 @@ func renderSymbolDocument(meta metadata, trace *deflate.Trace, block int, alphab
 				maxSymbol = node.Symbol
 			}
 		}
+	case "hclen":
+		maxSymbol = 18
 	default:
 		return nil, fmt.Errorf("unknown Huffman alphabet %q", alphabet)
 	}
