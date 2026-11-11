@@ -111,6 +111,30 @@ vendored [`doc/rfc1951.txt`](doc/rfc1951.txt) at the governing table in §3.2.7.
 Fixed-Huffman literals take the shorter path from their generated table entry
 to the appropriate row of the §3.2.6 table.
 
+Huffman tables open as generated `*.gzsym` documents. Their zero-based LSP
+line is the decoded symbol value: literal/length symbol 257 is line 257 and
+distance symbol 0 is line 0. Neovim normally presents buffer lines as
+one-based, so give only this generated document type a semantic gutter:
+
+```lua
+vim.filetype.add({
+  extension = { gzsym = "gzpls-symbols" },
+})
+
+vim.api.nvim_create_autocmd("FileType", {
+  pattern = "gzpls-symbols",
+  callback = function()
+    vim.opt_local.number = true
+    vim.opt_local.relativenumber = false
+    vim.opt_local.statuscolumn = "%=%{v:lnum - 1} "
+  end,
+})
+```
+
+Include `gzpls-symbols` in the `filetypes` for the `gzpls` LSP configuration.
+The generated files live only for the lifetime of the language server. The
+trace, tar manifest, and RFC buffers retain their ordinary line-number display.
+
 ### gsip
 
 `gsip` is very similar to [`compress/gzip`](https://pkg.go.dev/compress/gzip) but for an `io.ReaderAt` instead of an `io.Reader`.

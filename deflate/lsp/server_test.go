@@ -72,18 +72,24 @@ func TestDynamicLiteralDefinitionWalksToRFC(t *testing.T) {
 
 	line := doc.opLine[literalID]
 	wantLabels := []string{".litlen.", ".lengths.", ".codelen.", ".hclen."}
+	currentURI := uri
 	for _, fragment := range wantLabels {
-		links := definitionLinksAt(t, s, uri, line)
-		if len(links) != 1 || links[0].TargetURI != uri {
-			t.Fatalf("definition from line %d = %#v, want one local link", line, links)
+		links := definitionLinksAt(t, s, currentURI, line)
+		if len(links) != 1 || strings.HasSuffix(links[0].TargetURI, "/doc/rfc1951.txt") {
+			t.Fatalf("definition from %s:%d = %#v, want one generated-document link", currentURI, line, links)
 		}
+		currentURI = links[0].TargetURI
 		line = links[0].TargetSelectionRange.Start.Line
-		label := doc.encodingLine[line]
+		targetDoc := s.docs[currentURI]
+		if targetDoc == nil {
+			t.Fatalf("definition target %q is not open", currentURI)
+		}
+		label := targetDoc.encodingLine[line]
 		if !strings.Contains(label, fragment) {
 			t.Fatalf("definition target = %q, want fragment %q", label, fragment)
 		}
 	}
-	links := definitionLinksAt(t, s, uri, line)
+	links := definitionLinksAt(t, s, currentURI, line)
 	if len(links) != 1 || !strings.HasSuffix(links[0].TargetURI, "/doc/rfc1951.txt") {
 		t.Fatalf("HCLEN definition = %#v, want vendored RFC", links)
 	}
@@ -117,7 +123,6 @@ func TestFixedLiteralDefinitionJumpsToRFCTable(t *testing.T) {
 		"# DEFLATE trace · gd: value → code → header → RFC 1951",
 		"block 0 bits[0.0:2.2] # fixed",
 		"01110001  # 'A'",
-		"01110001        # 'A'",
 	}
 	for _, want := range wantLines {
 		if !bytes.Contains(listing, []byte(want)) {
@@ -133,14 +138,18 @@ func TestFixedLiteralDefinitionJumpsToRFCTable(t *testing.T) {
 		t.Fatal(doc.loadErr)
 	}
 	first := definitionLinksAt(t, s, uri, doc.opLine[0])
-	if len(first) != 1 || first[0].TargetURI != uri {
+	if len(first) != 1 || !strings.HasSuffix(first[0].TargetURI, ".gzsym") {
 		t.Fatalf("literal definition = %#v, want fixed table entry", first)
 	}
 	entryLine := first[0].TargetSelectionRange.Start.Line
-	if label := doc.encodingLine[entryLine]; label != "@b0.litlen.65" {
+	if entryLine != 65 {
+		t.Fatalf("fixed entry line = %d, want symbol 65", entryLine)
+	}
+	symbolDoc := s.docs[first[0].TargetURI]
+	if label := symbolDoc.encodingLine[entryLine]; label != "@b0.litlen.65" {
 		t.Fatalf("fixed entry label = %q", label)
 	}
-	root := definitionLinksAt(t, s, uri, entryLine)
+	root := definitionLinksAt(t, s, first[0].TargetURI, entryLine)
 	if len(root) != 1 || !strings.HasSuffix(root[0].TargetURI, "/doc/rfc1951.txt") {
 		t.Fatalf("fixed entry definition = %#v, want vendored RFC", root)
 	}
@@ -216,17 +225,23 @@ func TestMatchOperandsHaveIndependentDefinitions(t *testing.T) {
 	}
 
 	length := definitionLinksAtCharacter(t, s, uri, tokens.Length.Start.Line, tokens.Length.Start.Character)
-	if len(length) != 1 || doc.encodingLine[length[0].TargetSelectionRange.Start.Line] != doc.lengthDefs[matchID] {
+	if len(length) != 1 || s.docs[length[0].TargetURI].encodingLine[length[0].TargetSelectionRange.Start.Line] != doc.lengthDefs[matchID] {
 		t.Fatalf("length definition = %#v, want %q", length, doc.lengthDefs[matchID])
 	}
 	distance := definitionLinksAtCharacter(t, s, uri, tokens.Distance.Start.Line, tokens.Distance.Start.Character)
-	if len(distance) != 1 || doc.encodingLine[distance[0].TargetSelectionRange.Start.Line] != doc.distanceDefs[matchID] {
+	if len(distance) != 1 || s.docs[distance[0].TargetURI].encodingLine[distance[0].TargetSelectionRange.Start.Line] != doc.distanceDefs[matchID] {
 		t.Fatalf("distance definition = %#v, want %q", distance, doc.distanceDefs[matchID])
+	}
+	if length[0].TargetSelectionRange.Start.Line != doc.trace.Ops[matchID].LengthSymbol {
+		t.Fatalf("length table line = %d, want symbol %d", length[0].TargetSelectionRange.Start.Line, doc.trace.Ops[matchID].LengthSymbol)
+	}
+	if distance[0].TargetSelectionRange.Start.Line != doc.trace.Ops[matchID].DistanceSymbol {
+		t.Fatalf("distance table line = %d, want symbol %d", distance[0].TargetSelectionRange.Start.Line, doc.trace.Ops[matchID].DistanceSymbol)
 	}
 	for name, first := range map[string]locationLink{"length": length[0], "distance": distance[0]} {
 		link := first
-		for depth := 0; depth < 6 && link.TargetURI == uri; depth++ {
-			links := definitionLinksAtCharacter(t, s, uri,
+		for depth := 0; depth < 6 && !strings.HasSuffix(link.TargetURI, "/doc/rfc1951.txt"); depth++ {
+			links := definitionLinksAtCharacter(t, s, link.TargetURI,
 				link.TargetSelectionRange.Start.Line, link.TargetSelectionRange.Start.Character)
 			if len(links) != 1 {
 				t.Fatalf("%s definition depth %d = %#v, want one parent", name, depth, links)

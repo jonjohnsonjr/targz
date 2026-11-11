@@ -19,10 +19,11 @@ import (
 // Server is a minimal LSP 3.17 server. It intentionally implements only the
 // protocol needed to make DEFLATE call hierarchy work in ordinary editors.
 type Server struct {
-	in   *bufio.Reader
-	out  io.Writer
-	mu   sync.Mutex
-	docs map[string]*document
+	in           *bufio.Reader
+	out          io.Writer
+	mu           sync.Mutex
+	docs         map[string]*document
+	generatedDir string
 }
 
 // NewServer constructs a server which reads JSON-RPC messages from in and
@@ -45,6 +46,11 @@ type responseError struct {
 
 // Serve processes requests until EOF or an exit notification.
 func (s *Server) Serve() error {
+	defer func() {
+		if s.generatedDir != "" {
+			_ = os.RemoveAll(s.generatedDir)
+		}
+	}()
 	for {
 		body, err := s.readMessage()
 		if err != nil {
@@ -237,7 +243,10 @@ func (s *Server) handle(method string, raw json.RawMessage) (any, error) {
 		if doc, node, ok, err := s.encodingAt(raw); err != nil {
 			return nil, err
 		} else if ok {
-			link, found := doc.encodingDefinition(node)
+			link, found, linkErr := s.encodingDefinition(doc, node)
+			if linkErr != nil {
+				return nil, linkErr
+			}
 			if !found {
 				return []locationLink{}, nil
 			}
@@ -257,7 +266,9 @@ func (s *Server) handle(method string, raw json.RawMessage) (any, error) {
 				if containsPosition(doc.tokens[op.ID].Literal, at) {
 					origin = doc.tokens[op.ID].Literal
 				}
-				if link, ok := doc.encodingLink(origin, label); ok {
+				if link, ok, linkErr := s.encodingLink(doc, origin, label); linkErr != nil {
+					return nil, linkErr
+				} else if ok {
 					return []locationLink{link}, nil
 				}
 			}
@@ -266,13 +277,17 @@ func (s *Server) handle(method string, raw json.RawMessage) (any, error) {
 		if op.Kind == deflate.MatchOp {
 			tokens := doc.tokens[op.ID]
 			if containsPosition(tokens.Length, at) {
-				if link, ok := doc.encodingLink(tokens.Length, doc.lengthDefs[op.ID]); ok {
+				if link, ok, linkErr := s.encodingLink(doc, tokens.Length, doc.lengthDefs[op.ID]); linkErr != nil {
+					return nil, linkErr
+				} else if ok {
 					return []locationLink{link}, nil
 				}
 				return []locationLink{}, nil
 			}
 			if containsPosition(tokens.Distance, at) {
-				if link, ok := doc.encodingLink(tokens.Distance, doc.distanceDefs[op.ID]); ok {
+				if link, ok, linkErr := s.encodingLink(doc, tokens.Distance, doc.distanceDefs[op.ID]); linkErr != nil {
+					return nil, linkErr
+				} else if ok {
 					return []locationLink{link}, nil
 				}
 				return []locationLink{}, nil
@@ -767,26 +782,44 @@ func (d *document) link(originID, targetID int) locationLink {
 	}
 }
 
-func (d *document) encodingLink(origin lspRange, label string) (locationLink, bool) {
-	target, ok := d.encoding[label]
+func (s *Server) encodingLink(originDoc *document, origin lspRange, label string) (locationLink, bool, error) {
+	targetDoc := originDoc
+	target, ok := targetDoc.encoding[label]
+	if !ok && originDoc.meta.TraceURI != "" {
+		targetDoc, ok = s.docs[originDoc.meta.TraceURI]
+		if ok {
+			target, ok = targetDoc.encoding[label]
+		}
+	}
 	if !ok {
-		return locationLink{}, false
+		return locationLink{}, false, nil
+	}
+	if target.isSymbol() && targetDoc.meta.View != "symbols" {
+		var err error
+		targetDoc, err = s.symbolDocument(targetDoc, target)
+		if err != nil {
+			return locationLink{}, false, err
+		}
+		target, ok = targetDoc.encoding[label]
+		if !ok {
+			return locationLink{}, false, fmt.Errorf("generated symbol table is missing %s", label)
+		}
 	}
 	return locationLink{
 		OriginSelectionRange: origin,
-		TargetURI:            d.uri,
-		TargetRange:          d.lineRange(target.Line),
-		TargetSelectionRange: d.encodingSelection(target),
-	}, true
+		TargetURI:            targetDoc.uri,
+		TargetRange:          targetDoc.lineRange(target.Line),
+		TargetSelectionRange: targetDoc.encodingSelection(target),
+	}, true, nil
 }
 
-func (d *document) encodingDefinition(node encodingNode) (locationLink, bool) {
+func (s *Server) encodingDefinition(d *document, node encodingNode) (locationLink, bool, error) {
 	origin := d.encodingSelection(node)
 	if node.Parent != "" {
-		return d.encodingLink(origin, node.Parent)
+		return s.encodingLink(d, origin, node.Parent)
 	}
 	if d.meta.RFC == "" || node.RFCEnd <= node.RFCStart {
-		return locationLink{}, false
+		return locationLink{}, false, nil
 	}
 	return locationLink{
 		OriginSelectionRange: origin,
@@ -799,7 +832,39 @@ func (d *document) encodingDefinition(node encodingNode) (locationLink, bool) {
 			Start: position{Line: node.RFCSelect},
 			End:   position{Line: node.RFCSelect + 1},
 		},
-	}, true
+	}, true, nil
+}
+
+func (s *Server) symbolDocument(traceDoc *document, node encodingNode) (*document, error) {
+	if s.generatedDir == "" {
+		dir, err := os.MkdirTemp("", "gzpls-symbols-")
+		if err != nil {
+			return nil, fmt.Errorf("create symbol table directory: %w", err)
+		}
+		s.generatedDir = dir
+	}
+	path := filepath.Join(s.generatedDir, fmt.Sprintf("block-%d-%s.gzsym", node.BlockID, node.Alphabet))
+	uri := fileURI(path)
+	if doc, ok := s.docs[uri]; ok {
+		return doc, nil
+	}
+	meta := metadata{
+		Source: traceDoc.meta.Source, Raw: traceDoc.meta.Raw, View: "symbols", RFC: traceDoc.meta.RFC,
+		TraceURI: traceDoc.uri, Block: node.BlockID, Alphabet: node.Alphabet,
+	}
+	listing, err := renderSymbolDocument(meta, traceDoc.trace, node.BlockID, node.Alphabet)
+	if err != nil {
+		return nil, err
+	}
+	if err := os.WriteFile(path, listing, 0o600); err != nil {
+		return nil, fmt.Errorf("write symbol table: %w", err)
+	}
+	doc := openDocument(uri, string(listing))
+	if doc.loadErr != nil {
+		return nil, fmt.Errorf("open symbol table: %w", doc.loadErr)
+	}
+	s.docs[uri] = doc
+	return doc, nil
 }
 
 func (d *document) encodingSelection(node encodingNode) lspRange {

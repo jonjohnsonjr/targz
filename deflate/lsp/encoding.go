@@ -14,6 +14,8 @@ type encodingNode struct {
 	Label     string
 	Text      string
 	Parent    string
+	Alphabet  string
+	Symbol    int
 	BlockID   int
 	RFCStart  int
 	RFCEnd    int
@@ -58,6 +60,19 @@ func buildEncodingGraph(trace *deflate.Trace) encodingGraph {
 		if symbolSet == nil {
 			continue
 		}
+		// A symbol-table document is an address space, not a usage report. Keep
+		// every code present in the block's tables even when this stream never
+		// happens to decode that symbol.
+		if block.LiteralTable != nil {
+			for _, code := range block.LiteralTable.Codes {
+				symbolSet.litlen[code.Symbol] = struct{}{}
+			}
+		}
+		if block.DistanceTable != nil {
+			for _, code := range block.DistanceTable.Codes {
+				symbolSet.distance[code.Symbol] = struct{}{}
+			}
+		}
 		neededRuns := make(map[int]struct{})
 		for _, symbol := range sortedKeys(symbolSet.litlen) {
 			code, ok := huffmanCode(block.LiteralTable, symbol)
@@ -66,6 +81,7 @@ func buildEncodingGraph(trace *deflate.Trace) encodingGraph {
 			}
 			node := encodingNode{
 				Label: litlenLabel(block.ID, symbol), BlockID: block.ID,
+				Alphabet: "litlen", Symbol: symbol,
 				Text: fmt.Sprintf("%-15s # %s", codeString(code), litlenMeaning(symbol)),
 			}
 			if block.Kind == deflate.FixedBlock {
@@ -85,6 +101,7 @@ func buildEncodingGraph(trace *deflate.Trace) encodingGraph {
 			}
 			node := encodingNode{
 				Label: distanceLabel(block.ID, symbol), BlockID: block.ID,
+				Alphabet: "distance", Symbol: symbol,
 				Text: fmt.Sprintf("%-15s # %s", codeString(code), distanceMeaning(symbol)),
 			}
 			if block.Kind == deflate.FixedBlock {
@@ -141,6 +158,8 @@ func buildEncodingGraph(trace *deflate.Trace) encodingGraph {
 	}
 	return graph
 }
+
+func (n encodingNode) isSymbol() bool { return n.Alphabet != "" }
 
 func mustBitString(trace *deflate.Trace, span deflate.BitRange) string {
 	wire, _ := trace.BitString(span)

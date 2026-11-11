@@ -20,10 +20,13 @@ import (
 const headerPrefix = "# gzpls "
 
 type metadata struct {
-	Source string `json:"source"`
-	Raw    bool   `json:"raw"`
-	View   string `json:"view,omitempty"`
-	RFC    string `json:"rfc,omitempty"`
+	Source   string `json:"source"`
+	Raw      bool   `json:"raw"`
+	View     string `json:"view,omitempty"`
+	RFC      string `json:"rfc,omitempty"`
+	TraceURI string `json:"traceUri,omitempty"`
+	Block    int    `json:"block,omitempty"`
+	Alphabet string `json:"alphabet,omitempty"`
 }
 
 type document struct {
@@ -127,7 +130,7 @@ func disassembleView(source string, raw bool, trace *deflate.Trace, requested st
 		}
 		out.WriteString("\n# definitions\n")
 		for _, node := range graph.Nodes {
-			if node.BlockID == block.ID {
+			if node.BlockID == block.ID && !node.isSymbol() {
 				fmt.Fprintf(&out, "%s\n", node.Text)
 			}
 		}
@@ -206,12 +209,34 @@ func openDocument(uri, text string) *document {
 		doc.literalDefs = graph.LiteralDefs
 		doc.lengthDefs = graph.LengthDefs
 		doc.distanceDefs = graph.DistanceDefs
-		if len(definitionLines) != len(graph.Nodes) {
-			doc.loadErr = fmt.Errorf("trace listing has %d definition lines, want %d", len(definitionLines), len(graph.Nodes))
+		for _, node := range graph.Nodes {
+			if node.isSymbol() {
+				doc.encoding[node.Label] = node
+			}
+		}
+		visibleNodes := make([]encodingNode, 0, len(graph.Nodes))
+		for _, node := range graph.Nodes {
+			if !node.isSymbol() {
+				visibleNodes = append(visibleNodes, node)
+			}
+		}
+		if len(definitionLines) != len(visibleNodes) {
+			doc.loadErr = fmt.Errorf("trace listing has %d definition lines, want %d", len(definitionLines), len(visibleNodes))
 			return doc
 		}
-		for i, node := range graph.Nodes {
+		for i, node := range visibleNodes {
 			node.Line = definitionLines[i]
+			doc.encoding[node.Label] = node
+			doc.encodingLine[node.Line] = node.Label
+		}
+	}
+	if doc.loadErr == nil && doc.meta.View == "symbols" {
+		graph := buildEncodingGraph(doc.trace)
+		for _, node := range graph.Nodes {
+			if node.BlockID != doc.meta.Block || node.Alphabet != doc.meta.Alphabet {
+				continue
+			}
+			node.Line = node.Symbol
 			doc.encoding[node.Label] = node
 			doc.encodingLine[node.Line] = node.Label
 		}
@@ -228,6 +253,32 @@ func openDocument(uri, text string) *document {
 		}
 	}
 	return doc
+}
+
+func renderSymbolDocument(meta metadata, trace *deflate.Trace, block int, alphabet string) ([]byte, error) {
+	maxSymbol := 285
+	if alphabet == "distance" {
+		maxSymbol = 29
+	} else if alphabet != "litlen" {
+		return nil, fmt.Errorf("unknown Huffman alphabet %q", alphabet)
+	}
+	lines := make([]string, maxSymbol+1)
+	for _, node := range buildEncodingGraph(trace).Nodes {
+		if node.BlockID == block && node.Alphabet == alphabet && node.Symbol <= maxSymbol {
+			lines[node.Symbol] = node.Text
+		}
+	}
+	var out bytes.Buffer
+	for _, line := range lines {
+		out.WriteString(line)
+		out.WriteByte('\n')
+	}
+	encoded, err := json.Marshal(meta)
+	if err != nil {
+		return nil, err
+	}
+	fmt.Fprintf(&out, "%s%s\n", headerPrefix, encoded)
+	return out.Bytes(), nil
 }
 
 func codedOperand(trace *deflate.Trace, symbol, extra deflate.BitRange) string {
