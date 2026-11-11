@@ -801,14 +801,28 @@ func TestAutoViewDetectsTarAndExposesEntries(t *testing.T) {
 	if doc.loadErr != nil {
 		t.Fatal(doc.loadErr)
 	}
-	entry := doc.tar[tarEntryFirstLine]
+	var entry, linkEntry tarEntry
+	for _, candidate := range doc.tar {
+		if candidate.Name == "docs/readme.txt" && !candidate.Synthetic {
+			entry = candidate
+		}
+		if candidate.Name == "latest" {
+			linkEntry = candidate
+		}
+	}
+	if entry.Name == "" || linkEntry.Name == "" {
+		t.Fatalf("tar tree entries = %#v", doc.tar)
+	}
 	if entry.Name != "docs/readme.txt" || entry.Data.Start != 512 || entry.Data.End != 512+deflate.OutPos(len(contents)) {
 		t.Fatalf("first tar entry = %#v", entry)
+	}
+	if !bytes.Contains(listing, []byte("├── docs/")) || !bytes.Contains(listing, []byte("│   └── readme.txt")) || !bytes.Contains(listing, []byte("└── latest → docs/readme.txt")) {
+		t.Fatalf("minimal tar tree:\n%s", listing)
 	}
 
 	params, _ := json.Marshal(map[string]any{
 		"textDocument": map[string]any{"uri": uri},
-		"position":     map[string]any{"line": tarEntryFirstLine, "character": 3},
+		"position":     entry.NameToken.Start,
 	})
 	result, err := s.handle("textDocument/hover", params)
 	if err != nil {
@@ -825,8 +839,78 @@ func TestAutoViewDetectsTarAndExposesEntries(t *testing.T) {
 		t.Fatal(err)
 	}
 	symbols := result.([]documentSymbol)
-	if len(symbols) != 2 || symbols[0].Name != "docs/readme.txt" || symbols[1].Name != "latest" {
+	if len(symbols) != 2 || symbols[0].Name != "docs/" || len(symbols[0].Children) != 1 || symbols[0].Children[0].Name != "readme.txt" || symbols[1].Name != "latest" {
 		t.Fatalf("tar document symbols = %#v", symbols)
+	}
+
+	definition := definitionLinksAtCharacter(t, s, uri, entry.NameToken.Start.Line, entry.NameToken.Start.Character)
+	if len(definition) != 1 || !strings.HasSuffix(definition[0].TargetURI, "readme.txt") {
+		t.Fatalf("tar file definition = %#v, want extracted readme", definition)
+	}
+	extracted, err := os.ReadFile(strings.TrimPrefix(definition[0].TargetURI, "file://"))
+	if err != nil || !bytes.Equal(extracted, contents) {
+		t.Fatalf("extracted tar definition = %q, %v", extracted, err)
+	}
+	linkDefinition := definitionLinksAtCharacter(t, s, uri, linkEntry.LinkToken.Start.Line, linkEntry.LinkToken.Start.Character)
+	if len(linkDefinition) != 1 || linkDefinition[0].TargetURI != uri || linkDefinition[0].TargetSelectionRange != entry.NameToken {
+		t.Fatalf("tar link definition = %#v, want readme entry", linkDefinition)
+	}
+	referenceParams, _ := json.Marshal(map[string]any{
+		"textDocument": map[string]any{"uri": uri},
+		"position":     entry.NameToken.Start,
+		"context":      map[string]any{"includeDeclaration": false},
+	})
+	result, err = s.handle("textDocument/references", referenceParams)
+	if err != nil {
+		t.Fatal(err)
+	}
+	references := result.([]location)
+	if len(references) != 1 || references[0].Range != linkEntry.LinkToken {
+		t.Fatalf("tar references = %#v, want inbound link", references)
+	}
+	linkReferenceParams, _ := json.Marshal(map[string]any{
+		"textDocument": map[string]any{"uri": uri},
+		"position":     linkEntry.LinkToken.Start,
+		"context":      map[string]any{"includeDeclaration": true},
+	})
+	result, err = s.handle("textDocument/references", linkReferenceParams)
+	if err != nil {
+		t.Fatal(err)
+	}
+	linkReferences := result.([]location)
+	if len(linkReferences) != 2 || linkReferences[0].Range != entry.NameToken || linkReferences[1].Range != linkEntry.LinkToken {
+		t.Fatalf("tar link-target references = %#v, want declaration and inbound link", linkReferences)
+	}
+	implementationParams, _ := json.Marshal(map[string]any{
+		"textDocument": map[string]any{"uri": uri},
+		"position":     entry.NameToken.Start,
+	})
+	result, err = s.handle("textDocument/implementation", implementationParams)
+	if err != nil {
+		t.Fatal(err)
+	}
+	implementations := result.([]locationLink)
+	if len(implementations) == 0 || !strings.HasSuffix(implementations[0].TargetURI, "trace.deflate") {
+		t.Fatalf("tar implementations = %#v, want generated DEFLATE trace", implementations)
+	}
+	linkImplementationParams, _ := json.Marshal(map[string]any{
+		"textDocument": map[string]any{"uri": uri},
+		"position":     linkEntry.LinkToken.Start,
+	})
+	result, err = s.handle("textDocument/implementation", linkImplementationParams)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if linkImplementations := result.([]locationLink); len(linkImplementations) != len(implementations) {
+		t.Fatalf("tar link-target implementations = %d, want %d", len(linkImplementations), len(implementations))
+	}
+}
+
+func TestRenderHexPayload(t *testing.T) {
+	got := string(renderHexPayload([]byte{0, 1, 'A', 0xff}))
+	want := "00000000: 00 01 41 ff                                      |..A.|\n"
+	if got != want {
+		t.Fatalf("renderHexPayload() = %q, want %q", got, want)
 	}
 }
 

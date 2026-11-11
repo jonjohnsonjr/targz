@@ -165,20 +165,29 @@ func openDocument(uri, text string) *document {
 	}
 	opText := make(map[int]string)
 	var definitionLines []int
+	var tarLines []int
+	lineText := make(map[int]string)
 	scanner := bufio.NewScanner(strings.NewReader(text))
 	line := 0
 	nextOp := 0
-	inOps, inDefinitions := false, false
+	inOps, inDefinitions, inTar := false, false, false
 	foundMeta := false
 	for scanner.Scan() {
 		value := scanner.Text()
+		lineText[line] = value
 		doc.lineLen[line] = len(utf16.Encode([]rune(value)))
 		if strings.HasPrefix(value, headerPrefix) {
+			inTar = false
 			if err := json.Unmarshal([]byte(strings.TrimPrefix(value, headerPrefix)), &doc.meta); err != nil {
 				doc.loadErr = fmt.Errorf("invalid gzpls header: %w", err)
 				return doc
 			}
 			foundMeta = true
+		}
+		if value == "/" {
+			inTar = true
+		} else if inTar && value != "" && !strings.HasPrefix(value, headerPrefix) {
+			tarLines = append(tarLines, line)
 		}
 		if strings.HasPrefix(value, "block ") {
 			inOps, inDefinitions = true, false
@@ -266,9 +275,15 @@ func openDocument(uri, text string) *document {
 			doc.loadErr = fmt.Errorf("document requests tar view but decoded output is not tar")
 			return doc
 		}
-		for i := range entries {
-			entries[i].Line = tarEntryFirstLine + i
-			doc.tar[entries[i].Line] = entries[i]
+		rows := layoutTarEntries(entries)
+		if len(rows) != len(tarLines) {
+			doc.loadErr = fmt.Errorf("tar listing has %d entry lines, want %d", len(tarLines), len(rows))
+			return doc
+		}
+		for i := range rows {
+			rows[i].Line = tarLines[i]
+			rows[i].NameToken, rows[i].LinkToken = tarTokenRanges(lineText[tarLines[i]], tarLines[i], rows[i])
+			doc.tar[rows[i].Line] = rows[i]
 		}
 	}
 	return doc

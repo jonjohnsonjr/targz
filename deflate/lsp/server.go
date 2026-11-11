@@ -2,6 +2,7 @@ package lsp
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,6 +13,8 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/jonjohnsonjr/targz/deflate"
 )
@@ -248,6 +251,22 @@ func (s *Server) handle(method string, raw json.RawMessage) (any, error) {
 			}
 			return []locationLink{link}, nil
 		}
+		if doc, entry, ok, err := s.tarEntryAt(raw); err != nil {
+			return nil, err
+		} else if ok {
+			at, positionErr := requestPosition(raw)
+			if positionErr != nil {
+				return nil, positionErr
+			}
+			link, found, linkErr := s.tarDefinition(doc, entry, at)
+			if linkErr != nil {
+				return nil, linkErr
+			}
+			if !found {
+				return []locationLink{}, nil
+			}
+			return []locationLink{link}, nil
+		}
 		if doc, node, ok, err := s.encodingAt(raw); err != nil {
 			return nil, err
 		} else if ok {
@@ -336,6 +355,24 @@ func (s *Server) handle(method string, raw json.RawMessage) (any, error) {
 		if err := json.Unmarshal(raw, &params); err != nil {
 			return nil, err
 		}
+		if doc, entry, ok, err := s.tarEntryAt(raw); err != nil {
+			return nil, err
+		} else if ok {
+			at, positionErr := requestPosition(raw)
+			if positionErr != nil {
+				return nil, positionErr
+			}
+			if containsPosition(entry.LinkToken, at) && entry.LinkName != "" {
+				if target, found := doc.tarEntryByName(resolvedTarLink(entry)); found {
+					return doc.tarReferences(target, params.Context.IncludeDeclaration), nil
+				}
+				return []location{}, nil
+			}
+			if !containsPosition(entry.NameToken, at) {
+				return []location{}, nil
+			}
+			return doc.tarReferences(entry, params.Context.IncludeDeclaration), nil
+		}
 		if doc, node, ok, err := s.encodingAt(raw); err != nil {
 			return nil, err
 		} else if ok {
@@ -355,6 +392,25 @@ func (s *Server) handle(method string, raw json.RawMessage) (any, error) {
 		}
 		return locations, nil
 	case "textDocument/implementation":
+		if doc, entry, ok, err := s.tarEntryAt(raw); err != nil {
+			return nil, err
+		} else if ok {
+			at, positionErr := requestPosition(raw)
+			if positionErr != nil {
+				return nil, positionErr
+			}
+			if !containsPosition(entry.NameToken, at) && !containsPosition(entry.LinkToken, at) {
+				return []locationLink{}, nil
+			}
+			if containsPosition(entry.LinkToken, at) && entry.LinkName != "" {
+				if target, found := doc.tarEntryByName(resolvedTarLink(entry)); found {
+					entry = target
+				} else {
+					return []locationLink{}, nil
+				}
+			}
+			return s.tarImplementations(doc, entry)
+		}
 		doc, op, err := s.operationAt(raw)
 		if err != nil || op == nil {
 			return nil, err
@@ -466,11 +522,12 @@ type textEdit struct {
 }
 
 type documentSymbol struct {
-	Name           string   `json:"name"`
-	Detail         string   `json:"detail,omitempty"`
-	Kind           int      `json:"kind"`
-	Range          lspRange `json:"range"`
-	SelectionRange lspRange `json:"selectionRange"`
+	Name           string           `json:"name"`
+	Detail         string           `json:"detail,omitempty"`
+	Kind           int              `json:"kind"`
+	Range          lspRange         `json:"range"`
+	SelectionRange lspRange         `json:"selectionRange"`
+	Children       []documentSymbol `json:"children,omitempty"`
 }
 
 type itemData struct {
@@ -820,7 +877,12 @@ func (d *document) documentSymbols() []documentSymbol {
 		lines = append(lines, line)
 	}
 	sort.Ints(lines)
-	symbols := make([]documentSymbol, 0, len(lines))
+	type symbolNode struct {
+		symbol   documentSymbol
+		children []*symbolNode
+	}
+	var roots []*symbolNode
+	var stack []*symbolNode
 	for _, line := range lines {
 		entry := d.tar[line]
 		r := d.lineRange(line)
@@ -828,15 +890,40 @@ func (d *document) documentSymbols() []documentSymbol {
 		if entry.LinkName != "" {
 			detail += " → " + entry.LinkName
 		}
-		symbols = append(symbols, documentSymbol{
-			Name: entry.Name, Detail: detail, Kind: entry.SymbolKind, Range: r, SelectionRange: r,
-		})
+		node := &symbolNode{symbol: documentSymbol{
+			Name: entry.DisplayName, Detail: detail, Kind: entry.SymbolKind, Range: r, SelectionRange: entry.NameToken,
+		}}
+		if entry.Depth == 0 || len(stack) < entry.Depth {
+			roots = append(roots, node)
+		} else {
+			parent := stack[entry.Depth-1]
+			parent.children = append(parent.children, node)
+		}
+		if len(stack) > entry.Depth {
+			stack = stack[:entry.Depth]
+		}
+		stack = append(stack, node)
+	}
+	var convert func(*symbolNode) documentSymbol
+	convert = func(node *symbolNode) documentSymbol {
+		result := node.symbol
+		for _, child := range node.children {
+			result.Children = append(result.Children, convert(child))
+		}
+		return result
+	}
+	symbols := make([]documentSymbol, 0, len(roots))
+	for _, root := range roots {
+		symbols = append(symbols, convert(root))
 	}
 	return symbols
 }
 
 func (d *document) tarHover(entry tarEntry) string {
 	var b strings.Builder
+	if entry.Synthetic {
+		return fmt.Sprintf("**implicit tar directory** `%s/`", strings.TrimSuffix(entry.Name, "/"))
+	}
 	fmt.Fprintf(&b, "**tar %s** `%s`  \n", entry.Kind, entry.Name)
 	fmt.Fprintf(&b, "Mode: `%s` · Size: `%d` bytes · Modified: `%s`  \n", entry.Mode, entry.Size, entry.Modified)
 	fmt.Fprintf(&b, "Header: `out[%d:%d)` · Data: `out[%d:%d)`", entry.Header.Start, entry.Header.End, entry.Data.Start, entry.Data.End)
@@ -852,6 +939,35 @@ func (d *document) tarHover(entry tarEntry) string {
 		fmt.Fprintf(&b, "  \nDEFLATE provenance: `%d` producing operations (first is %%%d)", len(producers), producers[0].Op.ID)
 	}
 	return b.String()
+}
+
+func (d *document) tarEntryByName(name string) (tarEntry, bool) {
+	want := normalizedTarPath(name)
+	lines := make([]int, 0, len(d.tar))
+	for line := range d.tar {
+		lines = append(lines, line)
+	}
+	sort.Ints(lines)
+	for _, line := range lines {
+		entry := d.tar[line]
+		if !entry.Synthetic && normalizedTarPath(entry.Name) == want {
+			return entry, true
+		}
+	}
+	return tarEntry{}, false
+}
+
+func (d *document) tarReferences(target tarEntry, includeDeclaration bool) []location {
+	locations := make([]location, 0)
+	if includeDeclaration {
+		locations = append(locations, location{URI: d.uri, Range: target.NameToken})
+	}
+	for _, entry := range d.tar {
+		if entry.LinkName != "" && resolvedTarLink(entry) == normalizedTarPath(target.Name) {
+			locations = append(locations, location{URI: d.uri, Range: entry.LinkToken})
+		}
+	}
+	return locations
 }
 
 func (d *document) location(id int) location {
@@ -967,15 +1083,175 @@ func (s *Server) encodingReferences(d *document, node encodingNode, includeDecla
 	return locations, nil
 }
 
-func (s *Server) symbolDocument(traceDoc *document, node encodingNode) (*document, error) {
+func (s *Server) tarDefinition(d *document, entry tarEntry, at position) (locationLink, bool, error) {
+	if entry.Synthetic || (!containsPosition(entry.NameToken, at) && !containsPosition(entry.LinkToken, at)) {
+		return locationLink{}, false, nil
+	}
+	if entry.LinkName != "" {
+		target, ok := d.tarEntryByName(resolvedTarLink(entry))
+		if !ok {
+			return locationLink{}, false, nil
+		}
+		origin := entry.LinkToken
+		if containsPosition(entry.NameToken, at) {
+			origin = entry.NameToken
+		}
+		return locationLink{
+			OriginSelectionRange: origin,
+			TargetURI:            d.uri,
+			TargetRange:          d.lineRange(target.Line),
+			TargetSelectionRange: target.NameToken,
+		}, true, nil
+	}
+	if entry.Kind != "file" || !containsPosition(entry.NameToken, at) {
+		return locationLink{}, false, nil
+	}
+	uri, err := s.tarContentDocument(d, entry)
+	if err != nil {
+		return locationLink{}, false, err
+	}
+	return locationLink{
+		OriginSelectionRange: entry.NameToken,
+		TargetURI:            uri,
+		TargetRange:          lspRange{},
+		TargetSelectionRange: lspRange{},
+	}, true, nil
+}
+
+func (s *Server) tarContentDocument(d *document, entry tarEntry) (string, error) {
+	dir, err := s.ensureGeneratedDir()
+	if err != nil {
+		return "", err
+	}
+	start, end := int(entry.Data.Start), int(entry.Data.End)
+	if start < 0 || end < start || end > len(d.trace.Output) {
+		return "", fmt.Errorf("tar payload %s has invalid range [%d:%d)", entry.Name, start, end)
+	}
+	data := d.trace.Output[start:end]
+	base := filepath.Base(strings.TrimSuffix(entry.Name, "/"))
+	if base == "." || base == "" {
+		base = "entry"
+	}
+	path := filepath.Join(dir, fmt.Sprintf("tar-%x-%d-%s", d.revision[:6], entry.Index, base))
+	if !isTextPayload(data) {
+		path += ".hex"
+		data = renderHexPayload(data)
+	}
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		return "", fmt.Errorf("write extracted tar entry: %w", err)
+	}
+	return fileURI(path), nil
+}
+
+func isTextPayload(data []byte) bool {
+	if !utf8.Valid(data) || bytes.IndexByte(data, 0) >= 0 {
+		return false
+	}
+	for _, r := range string(data) {
+		if r != '\n' && r != '\r' && r != '\t' && !unicode.IsPrint(r) {
+			return false
+		}
+	}
+	return true
+}
+
+func renderHexPayload(data []byte) []byte {
+	var out strings.Builder
+	for offset := 0; offset < len(data); offset += 16 {
+		end := min(offset+16, len(data))
+		fmt.Fprintf(&out, "%08x: ", offset)
+		for i := offset; i < offset+16; i++ {
+			if i < end {
+				fmt.Fprintf(&out, "%02x ", data[i])
+			} else {
+				out.WriteString("   ")
+			}
+		}
+		out.WriteString(" |")
+		for _, value := range data[offset:end] {
+			if value >= 0x20 && value <= 0x7e {
+				out.WriteByte(value)
+			} else {
+				out.WriteByte('.')
+			}
+		}
+		out.WriteString("|\n")
+	}
+	return []byte(out.String())
+}
+
+func (s *Server) tarImplementations(d *document, entry tarEntry) ([]locationLink, error) {
+	if entry.Synthetic {
+		return []locationLink{}, nil
+	}
+	query := entry.Data
+	if query.Start == query.End {
+		query = entry.Header
+	}
+	traceDoc, err := s.tarTraceDocument(d)
+	if err != nil {
+		return nil, err
+	}
+	seen := make(map[int]struct{})
+	var links []locationLink
+	for _, production := range d.trace.Producers(query) {
+		id := production.Op.ID
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		links = append(links, locationLink{
+			OriginSelectionRange: entry.NameToken,
+			TargetURI:            traceDoc.uri,
+			TargetRange:          traceDoc.opRange(id),
+			TargetSelectionRange: traceDoc.tokens[id].Output,
+		})
+	}
+	return links, nil
+}
+
+func (s *Server) tarTraceDocument(d *document) (*document, error) {
+	dir, err := s.ensureGeneratedDir()
+	if err != nil {
+		return nil, err
+	}
+	path := filepath.Join(dir, fmt.Sprintf("tar-%x-trace.deflate", d.revision[:6]))
+	uri := fileURI(path)
+	if existing, ok := s.docs[uri]; ok {
+		return existing, nil
+	}
+	listing, err := disassembleView(d.meta.Source, d.meta.Raw, d.trace, "trace")
+	if err != nil {
+		return nil, err
+	}
+	if err := os.WriteFile(path, listing, 0o600); err != nil {
+		return nil, fmt.Errorf("write generated trace: %w", err)
+	}
+	doc := openDocument(uri, string(listing))
+	if doc.loadErr != nil {
+		return nil, doc.loadErr
+	}
+	s.docs[uri] = doc
+	return doc, nil
+}
+
+func (s *Server) ensureGeneratedDir() (string, error) {
 	if s.generatedDir == "" {
-		dir, err := os.MkdirTemp("", "gzpls-symbols-")
+		dir, err := os.MkdirTemp("", "gzpls-generated-")
 		if err != nil {
-			return nil, fmt.Errorf("create symbol table directory: %w", err)
+			return "", fmt.Errorf("create generated document directory: %w", err)
 		}
 		s.generatedDir = dir
 	}
-	path := filepath.Join(s.generatedDir, fmt.Sprintf("block-%d-%x-%s.gzsym", node.BlockID, traceDoc.revision[:6], node.Alphabet))
+	return s.generatedDir, nil
+}
+
+func (s *Server) symbolDocument(traceDoc *document, node encodingNode) (*document, error) {
+	dir, err := s.ensureGeneratedDir()
+	if err != nil {
+		return nil, err
+	}
+	path := filepath.Join(dir, fmt.Sprintf("block-%d-%x-%s.gzsym", node.BlockID, traceDoc.revision[:6], node.Alphabet))
 	uri := fileURI(path)
 	if doc, ok := s.docs[uri]; ok {
 		return doc, nil

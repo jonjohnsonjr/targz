@@ -83,11 +83,19 @@ also maps the editor's most important navigation commands onto provenance:
 Raw streams can be generated with `disassemble -raw`.
 
 The default `auto` view recognizes decoded tar streams by parsing their headers
-and checksums rather than trusting the filename. Tarballs open as a compact
-archive manifest with type, mode, exact size, modification time, decoded data
-range, path, link target, hover metadata, and document-outline symbols. Use
-`disassemble -view trace` to force the instruction listing, or `-view tar` to
-require a valid tar archive.
+and checksums rather than trusting the filename. Tarballs open as a minimal
+filesystem tree, including implicit parent directories and link arrows. The
+details stay out of the document: hover shows type, mode, size, modification
+time, decoded ranges, and DEFLATE provenance, while document symbols mirror the
+directory hierarchy.
+
+On an entry name, **Go to Definition** opens the exact extracted text (or a
+compact hex view for binary data). On a symlink or hard-link target it jumps to
+the target entry, and **Find References** reports inbound archive links. **Go to
+Implementation** crosses the format boundary into a generated DEFLATE trace and
+selects every operation that produced the entry's bytes. Use `disassemble -view
+trace` to force the instruction listing, or `-view tar` to require a valid tar
+archive.
 
 When opening `.tar.gz` directly in Neovim, disable its built-in gzip and tar
 read handlers before registering the `gzpls` `BufReadCmd`:
