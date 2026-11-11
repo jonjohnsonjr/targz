@@ -28,6 +28,7 @@ type document struct {
 	uri     string
 	meta    metadata
 	trace   *deflate.Trace
+	end     position
 	lineOp  map[int]int
 	opLine  map[int]int
 	lineLen map[int]int
@@ -123,6 +124,11 @@ func openDocument(uri, text string) *document {
 	if err := scanner.Err(); err != nil {
 		doc.loadErr = err
 		return doc
+	}
+	if strings.HasSuffix(text, "\n") {
+		doc.end = position{Line: line}
+	} else if line > 0 {
+		doc.end = position{Line: line - 1, Character: doc.lineLen[line-1]}
 	}
 	data, err := os.ReadFile(doc.meta.Source)
 	if err != nil {

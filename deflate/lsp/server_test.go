@@ -167,7 +167,7 @@ func TestOpTokenRangesUseUTF16Positions(t *testing.T) {
 	}
 }
 
-func TestRenamePreparesLiteralAndReportsDryRunImpact(t *testing.T) {
+func TestRenamePreparesLiteralReportsImpactAndRewritesArchive(t *testing.T) {
 	source := filepath.Join(t.TempDir(), "rename.gz")
 	var compressed bytes.Buffer
 	w := gzip.NewWriter(&compressed)
@@ -234,11 +234,23 @@ func TestRenamePreparesLiteralAndReportsDryRunImpact(t *testing.T) {
 		t.Fatal(err)
 	}
 	edit := result.(map[string]any)
-	if len(edit["changes"].(map[string]any)) != 0 {
-		t.Fatalf("dry-run rename returned edits: %#v", edit)
+	changes := edit["changes"].(map[string]any)
+	if len(changes) != 1 {
+		t.Fatalf("rename changes = %#v, want refreshed virtual document", changes)
 	}
-	if !bytes.Contains(output.Bytes(), []byte("400 output bytes")) || !bytes.Contains(output.Bytes(), []byte("No edits applied")) {
-		t.Fatalf("rename notification = %q, want blast radius and dry-run warning", output.Bytes())
+	rewritten, err := os.ReadFile(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	trace, err := deflate.ParseGzip(rewritten)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(trace.Output, bytes.Repeat([]byte("xbc"), 400)) {
+		t.Fatalf("rewritten output starts %q, want xbc repeated", trace.Output[:12])
+	}
+	if !bytes.Contains(output.Bytes(), []byte("400 output bytes")) || !bytes.Contains(output.Bytes(), []byte("re-encoded 1 gzip member")) {
+		t.Fatalf("rename notification = %q, want applied blast radius", output.Bytes())
 	}
 }
 

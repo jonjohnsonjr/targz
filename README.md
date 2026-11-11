@@ -72,12 +72,13 @@ also maps the editor's most important navigation commands onto provenance:
 - **Go to Implementation** follows the dependency graph through matches to the
   literal or stored operations which ultimately introduced the bytes. These
   results use the same token-precise links.
-- **Rename** is currently a safe dry run available on literal tokens. Entering
-  a replacement byte computes its exact transitive blast radius through later
-  matches: affected output bytes, matches, blocks, gzip members, output span,
-  and CRC32 consequences. The standard rename request shows the result without
-  editing the source; `gzpls/renameImpact` returns the same data as a structured
-  response for editor integrations. Rewriting awaits an actual assembler.
+- **Rename** is available on literal tokens. Entering a replacement byte follows
+  every transitive copy, atomically rewrites the compressed source, recomputes
+  affected gzip trailers, and returns a workspace edit containing the refreshed
+  disassembly. Exact gzip headers and unaffected members are retained byte for
+  byte; affected members receive fresh DEFLATE bodies, so their block layout may
+  change. `gzpls/renameImpact` remains a non-mutating structured preview for
+  editor integrations.
 
 Raw streams can be generated with `disassemble -raw`.
 

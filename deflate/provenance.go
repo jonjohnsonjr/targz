@@ -109,12 +109,17 @@ type RenameImpact struct {
 // enough: a destination byte is affected exactly when its normalized source
 // byte is affected.
 func (t *Trace) RenameImpact(opID int, replacement byte) (RenameImpact, error) {
+	impact, _, err := t.renameImpact(opID, replacement)
+	return impact, err
+}
+
+func (t *Trace) renameImpact(opID int, replacement byte) (RenameImpact, []bool, error) {
 	if opID < 0 || opID >= len(t.Ops) {
-		return RenameImpact{}, fmt.Errorf("operation %d is outside [0,%d)", opID, len(t.Ops))
+		return RenameImpact{}, nil, fmt.Errorf("operation %d is outside [0,%d)", opID, len(t.Ops))
 	}
 	op := t.Ops[opID]
 	if op.Kind != LiteralOp {
-		return RenameImpact{}, fmt.Errorf("operation %d is %s, not a literal", opID, op.Kind)
+		return RenameImpact{}, nil, fmt.Errorf("operation %d is %s, not a literal", opID, op.Kind)
 	}
 	impact := RenameImpact{
 		OpID: opID, Original: op.Literal, Replacement: replacement,
@@ -161,7 +166,7 @@ func (t *Trace) RenameImpact(opID int, replacement byte) (RenameImpact, error) {
 			}
 		}
 	}
-	return impact, nil
+	return impact, affected, nil
 }
 
 // Producers returns the instructions which produced bytes in query. Results

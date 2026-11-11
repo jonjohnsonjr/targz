@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -166,7 +168,36 @@ func (s *Server) handle(method string, raw json.RawMessage) (any, error) {
 		if method == "gzpls/renameImpact" {
 			return view, nil
 		}
-		message := renameImpactMessage(impact)
+		rewritten, impact, err := doc.trace.RewriteLiteral(op.ID, replacement)
+		if err != nil {
+			return nil, err
+		}
+		var nextTrace *deflate.Trace
+		if doc.meta.Raw {
+			nextTrace, err = deflate.ParseRaw(rewritten)
+		} else {
+			nextTrace, err = deflate.ParseGzip(rewritten)
+		}
+		if err != nil {
+			return nil, fmt.Errorf("verify rewritten stream: %w", err)
+		}
+		listing, err := Disassemble(doc.meta.Source, doc.meta.Raw, nextTrace)
+		if err != nil {
+			return nil, err
+		}
+		oldSize := 0
+		if info, statErr := os.Stat(doc.meta.Source); statErr == nil {
+			oldSize = int(info.Size())
+		}
+		if err := replaceFile(doc.meta.Source, rewritten); err != nil {
+			return nil, err
+		}
+		next := openDocument(doc.uri, string(listing))
+		if next.loadErr != nil {
+			return nil, fmt.Errorf("open rewritten document: %w", next.loadErr)
+		}
+		s.docs[doc.uri] = next
+		message := renameAppliedMessage(impact, oldSize, len(rewritten))
 		if err := s.writeMessage(map[string]any{
 			"jsonrpc": "2.0",
 			"method":  "window/showMessage",
@@ -174,9 +205,12 @@ func (s *Server) handle(method string, raw json.RawMessage) (any, error) {
 		}); err != nil {
 			return nil, err
 		}
-		// Deliberately return an empty edit. Rewriting the textual disassembly
-		// would lie about the still-unchanged compressed source.
-		return map[string]any{"changes": map[string]any{}}, nil
+		return map[string]any{"changes": map[string]any{
+			doc.uri: []textEdit{{
+				Range:   lspRange{Start: position{}, End: doc.end},
+				NewText: string(listing),
+			}},
+		}}, nil
 	case "textDocument/definition":
 		doc, op, err := s.operationAt(raw)
 		if err != nil || op == nil {
@@ -296,6 +330,11 @@ type locationLink struct {
 	TargetSelectionRange lspRange `json:"targetSelectionRange"`
 }
 
+type textEdit struct {
+	Range   lspRange `json:"range"`
+	NewText string   `json:"newText"`
+}
+
 type itemData struct {
 	URI string `json:"uri"`
 	Op  int    `json:"op"`
@@ -400,6 +439,56 @@ func renameImpactMessage(impact deflate.RenameImpact) string {
 		quoteByte(impact.Original), quoteByte(impact.Replacement), impact.OutputBytes, impact.Matches,
 		impact.Blocks, impact.Members, impact.FirstOutput, impact.LastOutput, checksum,
 	)
+}
+
+func renameAppliedMessage(impact deflate.RenameImpact, oldSize, newSize int) string {
+	wrapper := "raw DEFLATE stream"
+	if impact.Members == 1 {
+		wrapper = "1 gzip member with a new CRC32"
+	} else if impact.Members > 1 {
+		wrapper = fmt.Sprintf("%d gzip members with new CRC32 values", impact.Members)
+	}
+	return fmt.Sprintf(
+		"Renamed %s → %s across %d output bytes through %d matches; re-encoded %s (%d → %d compressed bytes).",
+		quoteByte(impact.Original), quoteByte(impact.Replacement), impact.OutputBytes, impact.Matches,
+		wrapper, oldSize, newSize,
+	)
+}
+
+func replaceFile(path string, data []byte) (err error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return fmt.Errorf("stat compressed source: %w", err)
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("compressed source is not a regular file: %s", path)
+	}
+	f, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".gzpls-*")
+	if err != nil {
+		return fmt.Errorf("create rewritten source: %w", err)
+	}
+	tmp := f.Name()
+	defer func() {
+		if err != nil {
+			_ = os.Remove(tmp)
+		}
+	}()
+	if err = f.Chmod(info.Mode().Perm()); err == nil {
+		_, err = f.Write(data)
+	}
+	if err == nil {
+		err = f.Sync()
+	}
+	if closeErr := f.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		return fmt.Errorf("write rewritten source: %w", err)
+	}
+	if err = os.Rename(tmp, path); err != nil {
+		return fmt.Errorf("replace compressed source: %w", err)
+	}
+	return nil
 }
 
 func parseRenameByte(name string) (byte, error) {
