@@ -114,9 +114,10 @@ func TestFixedLiteralDefinitionJumpsToRFCTable(t *testing.T) {
 		t.Fatalf("trace exposes verbose implementation detail:\n%s", listing)
 	}
 	wantLines := []string{
-		"block 0 bits[0.0:2.2] # fixed Huffman",
-		"%0  01110001        # literal 'A'    out[0:1]",
-		"@b0.litlen.65      01110001        # lit/len 65 = 'A' (8 bits)",
+		"# DEFLATE trace · gd: value → code → header → RFC 1951",
+		"block 0 bits[0.0:2.2] # fixed",
+		"%0  01110001        # 'A' → out[0:1]",
+		"@b0.litlen.65      01110001        # 'A'",
 	}
 	for _, want := range wantLines {
 		if !bytes.Contains(listing, []byte(want)) {
@@ -388,10 +389,10 @@ func TestCallHierarchyFollowsDeflateDependencies(t *testing.T) {
 }
 
 func TestOpTokenRangesUseUTF16Positions(t *testing.T) {
-	line := "%1 literal 'é' out[0:1] bits[0.0:1.0]"
+	line := "%1  101 # 'é' → out[0:1]"
 	tokens := opTokenRanges(line, 7)
 	// The UTF-8 encoding of é occupies two bytes but one UTF-16 code unit.
-	if got, want := tokens.Output.Start.Character, len([]rune("%1 literal 'é' ")); got != want {
+	if got, want := tokens.Output.Start.Character, len([]rune("%1  101 # 'é' → ")); got != want {
 		t.Fatalf("output token starts at UTF-16 character %d, want %d", got, want)
 	}
 	if tokens.Output.Start.Line != 7 || tokens.Output.End.Line != 7 {

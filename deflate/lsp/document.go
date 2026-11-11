@@ -102,27 +102,27 @@ func disassembleView(source string, raw bool, trace *deflate.Trace, requested st
 		return renderTarView(meta, trace, entries), nil
 	}
 	var out bytes.Buffer
-	fmt.Fprintf(&out, "%s%s\n", headerPrefix, meta)
-	fmt.Fprintf(&out, "output %d bytes, %d blocks, %d ops # decoded stream\n\n", len(trace.Output), len(trace.Blocks), len(trace.Ops))
+	out.WriteString("# DEFLATE trace · gd: value → code → header → RFC 1951\n")
+	fmt.Fprintf(&out, "# %d B out · %d blocks · %d ops\n\n", len(trace.Output), len(trace.Blocks), len(trace.Ops))
 	graph := buildEncodingGraph(trace)
 	for _, block := range trace.Blocks {
-		fmt.Fprintf(&out, "block %d bits[%s:%s] # %s Huffman\n", block.ID, block.Input.Start, block.Input.End, block.Kind)
+		fmt.Fprintf(&out, "block %d bits[%s:%s] # %s\n", block.ID, block.Input.Start, block.Input.End, block.Kind)
 		for _, op := range trace.Ops[block.FirstOp : block.FirstOp+block.NumOps] {
 			wire, _ := trace.BitString(op.Input)
 			switch op.Kind {
 			case deflate.LiteralOp:
-				fmt.Fprintf(&out, "%%%d  %-15s # literal %-6s out[%d:%d]\n",
+				fmt.Fprintf(&out, "%%%d  %-15s # %s → out[%d:%d]\n",
 					op.ID, wire, quoteByte(op.Literal), op.Output.Start, op.Output.End)
 			case deflate.StoredOp:
 				fmt.Fprintf(&out, "%%%d  stored %d bytes # out[%d:%d]\n",
 					op.ID, op.Length, op.Output.Start, op.Output.End)
 			case deflate.MatchOp:
 				seed, _ := op.Seed()
-				fmt.Fprintf(&out, "%%%d  %-15s # copy %d bytes, %d back out[%d:%d] seed[%d:%d]\n",
-					op.ID, wire, op.Length, op.Distance, op.Output.Start, op.Output.End, seed.Start, seed.End)
+				fmt.Fprintf(&out, "%%%d  %-15s # out[%d:%d] ← seed[%d:%d] ×%d\n",
+					op.ID, wire, op.Output.Start, op.Output.End, seed.Start, seed.End, op.Length)
 			}
 		}
-		out.WriteString("\n# definitions used by this block\n")
+		out.WriteString("\n# definitions\n")
 		for _, node := range graph.Nodes {
 			if node.BlockID == block.ID {
 				fmt.Fprintf(&out, "%-18s %s\n", node.Label, node.Text)
@@ -130,6 +130,7 @@ func disassembleView(source string, raw bool, trace *deflate.Trace, requested st
 		}
 		out.WriteByte('\n')
 	}
+	fmt.Fprintf(&out, "%s%s\n", headerPrefix, meta)
 	return out.Bytes(), nil
 }
 
@@ -142,18 +143,16 @@ func openDocument(uri, text string) *document {
 	encodedLines := make(map[string]int)
 	scanner := bufio.NewScanner(strings.NewReader(text))
 	line := 0
+	foundMeta := false
 	for scanner.Scan() {
 		value := scanner.Text()
 		doc.lineLen[line] = len(utf16.Encode([]rune(value)))
-		if line == 0 {
-			if !strings.HasPrefix(value, headerPrefix) {
-				doc.loadErr = fmt.Errorf("not a gzpls disassembly: first line must start with %q", headerPrefix)
-				return doc
-			}
+		if strings.HasPrefix(value, headerPrefix) {
 			if err := json.Unmarshal([]byte(strings.TrimPrefix(value, headerPrefix)), &doc.meta); err != nil {
 				doc.loadErr = fmt.Errorf("invalid gzpls header: %w", err)
 				return doc
 			}
+			foundMeta = true
 		}
 		if strings.HasPrefix(value, "%") {
 			end := strings.IndexAny(value, " \t")
@@ -174,6 +173,10 @@ func openDocument(uri, text string) *document {
 	}
 	if err := scanner.Err(); err != nil {
 		doc.loadErr = err
+		return doc
+	}
+	if !foundMeta {
+		doc.loadErr = fmt.Errorf("not a gzpls disassembly: missing %q metadata", headerPrefix)
 		return doc
 	}
 	if strings.HasSuffix(text, "\n") {
@@ -221,13 +224,16 @@ func opTokenRanges(line string, lineNumber int) opTokens {
 }
 
 func literalTokenRange(line string, lineNumber int) lspRange {
-	const prefix = "literal "
+	const prefix = "# "
 	start := strings.Index(line, prefix)
 	if start < 0 {
 		return lspRange{}
 	}
 	start += len(prefix)
-	end := strings.Index(line[start:], " out[")
+	if start >= len(line) || line[start] != '\'' {
+		return lspRange{}
+	}
+	end := strings.Index(line[start:], " → out[")
 	if end < 0 {
 		return lspRange{}
 	}

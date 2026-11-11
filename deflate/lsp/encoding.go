@@ -55,7 +55,7 @@ func buildEncodingGraph(trace *deflate.Trace) encodingGraph {
 			}
 			node := encodingNode{
 				Label: litlenLabel(block.ID, symbol), BlockID: block.ID,
-				Text: fmt.Sprintf("%-15s # lit/len %d = %s (%d bits)", codeString(code), symbol, quoteByte(byte(symbol)), code.Bits),
+				Text: fmt.Sprintf("%-15s # %s", codeString(code), quoteByte(byte(symbol))),
 			}
 			if block.Kind == deflate.FixedBlock {
 				node.RFCStart, node.RFCEnd, node.RFCSelect = 654, 670, fixedRFCLine(symbol)
@@ -78,8 +78,8 @@ func buildEncodingGraph(trace *deflate.Trace) encodingGraph {
 			neededCodeSymbols[run.Symbol] = struct{}{}
 			graph.Nodes = append(graph.Nodes, encodingNode{
 				Label: lengthRunLabel(block.ID, runIndex), Parent: codeLengthLabel(block.ID, run.Symbol), BlockID: block.ID,
-				Text: fmt.Sprintf("%-15s # %s gets length %d via symbol %d × %d",
-					mustBitString(trace, run.Input), slotRange(header, run.SlotsStart, run.SlotsEnd), run.Length, run.Symbol, run.Repeat),
+				Text: fmt.Sprintf("%-15s # %s = %d",
+					mustBitString(trace, run.Input), slotRange(header, run.SlotsStart, run.SlotsEnd), run.Length),
 			})
 		}
 		neededFields := make(map[int]struct{})
@@ -95,7 +95,7 @@ func buildEncodingGraph(trace *deflate.Trace) encodingGraph {
 			neededFields[field] = struct{}{}
 			graph.Nodes = append(graph.Nodes, encodingNode{
 				Label: codeLengthLabel(block.ID, symbol), Parent: hclenLabel(block.ID, field), BlockID: block.ID,
-				Text: fmt.Sprintf("%-15s # code-length symbol %d (%d bits)", codeString(code), symbol, code.Bits),
+				Text: fmt.Sprintf("%-15s # length %d", codeString(code), symbol),
 			})
 		}
 		for _, fieldIndex := range sortedKeys(neededFields) {
@@ -103,8 +103,8 @@ func buildEncodingGraph(trace *deflate.Trace) encodingGraph {
 			wire, _ := trace.BitString(field.Input)
 			graph.Nodes = append(graph.Nodes, encodingNode{
 				Label: hclenLabel(block.ID, fieldIndex), BlockID: block.ID,
-				Text: fmt.Sprintf("%-15s # HCLEN[%d]: symbol %d uses %d bits",
-					wire, fieldIndex, field.Symbol, field.Length),
+				Text: fmt.Sprintf("%-15s # symbol %d: %d bits (HCLEN[%d])",
+					wire, field.Symbol, field.Length, fieldIndex),
 				RFCStart: 689, RFCEnd: 750, RFCSelect: 734,
 			})
 		}
@@ -162,6 +162,10 @@ func codeLengthField(header *deflate.DynamicHeader, symbol int) int {
 func slotRange(header *deflate.DynamicHeader, start, end int) string {
 	nlit := header.NumLiteralLengths
 	switch {
+	case end == start+1 && end <= nlit:
+		return fmt.Sprintf("litlen[%d]", start)
+	case end == start+1 && start >= nlit:
+		return fmt.Sprintf("distance[%d]", start-nlit)
 	case end <= nlit:
 		return fmt.Sprintf("litlen[%d:%d]", start, end)
 	case start >= nlit:
