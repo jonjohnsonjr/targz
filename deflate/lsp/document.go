@@ -66,6 +66,17 @@ type plaintextDocument struct {
 	lineStarts []int
 }
 
+// ViewProgress is a stable, line-oriented progress event for editor clients
+// which need to occupy a buffer while auto-view detection and indexing run.
+type ViewProgress struct {
+	Phase      string `json:"phase"`
+	Detail     string `json:"detail,omitempty"`
+	View       string `json:"view,omitempty"`
+	Compressed int64  `json:"compressed,omitempty"`
+	Decoded    uint64 `json:"decoded,omitempty"`
+	Entries    uint64 `json:"entries,omitempty"`
+}
+
 type opTokens struct {
 	Bits           lspRange
 	Literal        lspRange
@@ -95,21 +106,42 @@ func DisassembleFile(source string, raw bool) ([]byte, error) {
 // content: tar archives as directories, text verbatim, and other payloads as a
 // compact hex dump. Trace remains an explicit debugger view.
 func DisassembleFileView(source string, raw bool, view string) ([]byte, error) {
+	return DisassembleFileViewProgress(source, raw, view, nil)
+}
+
+// DisassembleFileViewProgress is DisassembleFileView with coarse progress
+// events. Events intentionally describe stable phases rather than pretend that
+// compressed and decoded byte offsets form a meaningful percentage.
+func DisassembleFileViewProgress(source string, raw bool, view string, progress func(ViewProgress)) ([]byte, error) {
 	abs, err := filepath.Abs(source)
 	if err != nil {
 		return nil, err
 	}
+	report := func(event ViewProgress) {
+		if progress != nil {
+			progress(event)
+		}
+	}
+	var compressed int64
+	if info, statErr := os.Stat(abs); statErr == nil {
+		compressed = info.Size()
+	}
+	report(ViewProgress{Phase: "inspect", Detail: "inspecting stream", Compressed: compressed})
 	if view == "auto" || view == "tar" {
+		report(ViewProgress{Phase: "index", Detail: "checking for a tar filesystem", Compressed: compressed})
 		entries, header, isTar, err := scanTarDirectory(abs, raw, "")
 		if err != nil {
 			return nil, err
 		}
 		if isTar {
+			report(ViewProgress{Phase: "render", Detail: "rendering root directory", View: "tar", Compressed: compressed, Decoded: header.Payload, Entries: header.Count})
 			meta, err := json.Marshal(metadata{Source: abs, Raw: raw, View: "tar", RFC: locateRFC1951(abs)})
 			if err != nil {
 				return nil, err
 			}
-			return renderTarView(meta, entries, "", header.Count, header.Payload), nil
+			result := renderTarView(meta, entries, "", header.Count, header.Payload)
+			report(ViewProgress{Phase: "ready", View: "tar", Compressed: compressed, Decoded: header.Payload, Entries: header.Count})
+			return result, nil
 		}
 		if view == "tar" {
 			return nil, fmt.Errorf("decoded output is not a tar archive")
@@ -119,11 +151,25 @@ func DisassembleFileView(source string, raw bool, view string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	report(ViewProgress{Phase: "inflate", Detail: "decoding content", Compressed: compressed})
 	trace, err := parse(data, raw)
 	if err != nil {
 		return nil, err
 	}
-	return disassembleView(abs, raw, trace, view)
+	selected := view
+	if selected == "auto" {
+		if isTextPayload(trace.Output) {
+			selected = "text"
+		} else {
+			selected = "hex"
+		}
+	}
+	report(ViewProgress{Phase: "render", Detail: "rendering " + selected, View: selected, Compressed: compressed, Decoded: uint64(len(trace.Output))})
+	result, err := disassembleView(abs, raw, trace, view)
+	if err == nil {
+		report(ViewProgress{Phase: "ready", View: selected, Compressed: compressed, Decoded: uint64(len(trace.Output))})
+	}
+	return result, err
 }
 
 // Disassemble renders a trace as a gzpls source document. Content-first

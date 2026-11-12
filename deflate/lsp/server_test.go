@@ -1004,12 +1004,25 @@ func TestAutoViewShowsNonTarContent(t *testing.T) {
 	text := []byte("hello from an ordinary gzip\n# gzpls is ordinary content here\nsecond line\n")
 	source := filepath.Join(t.TempDir(), "hello.txt.gz")
 	writeGzip(source, text)
-	listing, err := DisassembleFileView(source, false, "auto")
+	var progress []ViewProgress
+	listing, err := DisassembleFileViewProgress(source, false, "auto", func(event ViewProgress) {
+		progress = append(progress, event)
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !bytes.Equal(listing, text) {
 		t.Fatalf("auto text view = %q, want decoded payload", listing)
+	}
+	var phases []string
+	for _, event := range progress {
+		phases = append(phases, event.Phase)
+	}
+	if got, want := strings.Join(phases, ","), "inspect,index,inflate,render,ready"; got != want {
+		t.Fatalf("progress phases = %q, want %q", got, want)
+	}
+	if ready := progress[len(progress)-1]; ready.View != "text" || ready.Compressed == 0 || ready.Decoded != uint64(len(text)) {
+		t.Fatalf("ready progress = %#v", ready)
 	}
 
 	uri := fileURI(source)

@@ -70,6 +70,9 @@ The default `auto` view is content-first. Tar payloads open as directories,
 ordinary non-tar gzip payloads open as decoded text with the underlying
 filetype, and binary payloads open as compact hex dumps. Use `disassemble -view
 trace` when the DEFLATE instruction stream itself should be the starting view.
+Archive opening is asynchronous: Neovim immediately shows a small animated
+progress buffer with the current inspection/index/render phase and known sizes,
+then atomically replaces it with the stable document before attaching the LSP.
 
 For clients other than Neovim, first produce the textual document the server
 operates on:

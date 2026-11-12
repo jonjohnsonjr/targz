@@ -3,6 +3,7 @@
 package main
 
 import (
+	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
@@ -31,6 +32,7 @@ func main() {
 		fs := flag.NewFlagSet("disassemble", flag.ExitOnError)
 		raw := fs.Bool("raw", false, "parse raw DEFLATE instead of detecting gzip")
 		view := fs.String("view", "auto", "render auto, trace, or tar view")
+		progress := fs.Bool("progress", false, "emit JSON progress events on stderr")
 		if err := fs.Parse(flag.Args()[1:]); err != nil {
 			fatal(err)
 		}
@@ -38,7 +40,14 @@ func main() {
 			flag.Usage()
 			os.Exit(2)
 		}
-		listing, err := deflatelsp.DisassembleFileView(fs.Arg(0), *raw, *view)
+		var report func(deflatelsp.ViewProgress)
+		if *progress {
+			encoder := json.NewEncoder(os.Stderr)
+			report = func(event deflatelsp.ViewProgress) {
+				_ = encoder.Encode(event)
+			}
+		}
+		listing, err := deflatelsp.DisassembleFileViewProgress(fs.Arg(0), *raw, *view, report)
 		if err != nil {
 			fatal(err)
 		}

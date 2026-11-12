@@ -180,6 +180,7 @@ local repo = %s
 local marker = %s
 dofile(%s).setup({cmd = {server}, root_dir = repo})
 vim.cmd("edit " .. vim.fn.fnameescape(source))
+assert(vim.api.nvim_buf_get_lines(0, 0, 1, false)[1] == "gzpls", "archive did not show the immediate splash")
 assert(vim.wait(5000, function()
   return #vim.lsp.get_clients({name = "gzpls", bufnr = 0}) == 1
 end), "gzpls did not attach to archive")
