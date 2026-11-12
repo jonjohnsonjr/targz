@@ -85,13 +85,14 @@ Raw streams can be generated with `disassemble -raw`.
 
 The default `auto` view recognizes decoded tar streams by parsing their headers
 and checksums rather than trusting the filename. Tarballs open as a minimal
-filesystem tree, including implicit parent directories and link arrows. The
-details stay out of the document: hover shows type, mode, size, modification
-time, and decoded ranges, while document symbols mirror the directory
-hierarchy. Tar browsing streams the decoded archive and does not retain its
-payload or build the full DEFLATE trace. Requesting provenance with **Go to
-Implementation** loads that trace on demand; subsequent hovers also summarize
-the producing operations.
+filesystem directory, including implicit child directories and link arrows.
+Only immediate children appear in a buffer; **Go to Definition** on a directory
+opens another small virtual document for that directory. The details stay out
+of the document: hover shows type, mode, size, modification time, and decoded
+ranges, while document symbols mirror the visible children. Tar browsing
+streams the decoded archive and does not retain its payload or build the full
+DEFLATE trace. Requesting provenance with **Go to Implementation** loads that
+trace on demand; subsequent hovers also summarize the producing operations.
 
 On an entry name, **Go to Definition** opens the exact extracted text under its
 natural archive path (or a compact hex view for binary data). These file-backed
@@ -112,6 +113,19 @@ decoded range instead of inflating from byte zero. Raw DEFLATE catalogs persist
 too, but member extraction remains sequential because `gsip` checkpoints carry
 gzip framing state. Corrupt or incompatible cache files are ignored and
 rebuilt; no sidecar is written next to the archive.
+
+Navigation follows the same three questions at every format layer:
+
+- **Go to Definition — what does this denote?** Directories open their child
+  listing, files open their contents, links open their target, copied DEFLATE
+  values open their source, and Huffman values walk through their encoding
+  ancestry until they reach the governing RFC rule.
+- **Go to Implementation — what physically realizes it?** Tar entries open
+  the DEFLATE operations which produce their decoded range, and copied values
+  walk transitively to the literal or stored bytes at the bottom of the graph.
+- **Find References — who names or consumes it?** Archive paths report inbound
+  links, produced output reports later matches which copy it, and encoding
+  definitions report the symbols or fields which depend on them.
 
 When opening `.tar.gz` directly in Neovim, disable its built-in gzip and tar
 read handlers before registering the `gzpls` `BufReadCmd`:

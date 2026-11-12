@@ -296,76 +296,70 @@ func displayTarText(value string) string {
 	}, value)
 }
 
-type tarTreeNode struct {
-	segment  string
-	fullName string
-	entries  []tarEntry
-	children map[string]*tarTreeNode
-}
-
-func layoutTarEntries(entries []tarEntry) []tarEntry {
-	root := &tarTreeNode{children: make(map[string]*tarTreeNode)}
-	nodes := 0
-	duplicates := 0
-	for _, entry := range entries {
-		clean := strings.Trim(entry.Name, "/")
-		if clean == "" {
-			clean = entry.Name
-		}
-		parts := strings.Split(clean, "/")
-		node := root
-		for i, part := range parts {
-			child := node.children[part]
-			if child == nil {
-				child = &tarTreeNode{segment: part, fullName: strings.Join(parts[:i+1], "/"), children: make(map[string]*tarTreeNode)}
-				node.children[part] = child
-				nodes++
-			}
-			node = child
-		}
-		if len(node.entries) != 0 {
-			duplicates++
-		}
-		node.entries = append(node.entries, entry)
+func directoryTarEntries(entries []tarEntry, directory string) []tarEntry {
+	directory = normalizedTarPath(directory)
+	prefix := directory
+	if prefix != "" && prefix != "." {
+		prefix += "/"
+	} else {
+		prefix = ""
 	}
-	rows := make([]tarEntry, 0, nodes+duplicates)
-	flattenTarTree(root, nil, &rows)
-	return rows
-}
-
-func flattenTarTree(parent *tarTreeNode, ancestorLast []bool, rows *[]tarEntry) {
-	names := make([]string, 0, len(parent.children))
-	for name := range parent.children {
+	direct := make(map[string][]tarEntry)
+	nested := make(map[string]bool)
+	for _, entry := range entries {
+		name := normalizedTarPath(entry.Name)
+		if !strings.HasPrefix(name, prefix) || name == strings.TrimSuffix(prefix, "/") {
+			continue
+		}
+		relative := strings.TrimPrefix(name, prefix)
+		segment, rest, hasRest := strings.Cut(relative, "/")
+		if segment == "" {
+			continue
+		}
+		child := normalizedTarPath(path.Join(directory, segment))
+		if hasRest && rest != "" {
+			nested[child] = true
+			continue
+		}
+		direct[child] = append(direct[child], entry)
+	}
+	for child := range nested {
+		hasDirectory := false
+		for _, entry := range direct[child] {
+			if entry.Kind == "dir" {
+				hasDirectory = true
+				break
+			}
+		}
+		if !hasDirectory {
+			direct[child] = append(direct[child], tarEntry{
+				Name: child, Kind: "dir", Mode: "drwxr-xr-x", Synthetic: true, SymbolKind: 3,
+			})
+		}
+	}
+	names := make([]string, 0, len(direct))
+	for name := range direct {
 		names = append(names, name)
 	}
 	sort.Strings(names)
-	for i, name := range names {
-		node := parent.children[name]
-		last := i == len(names)-1
-		entry := tarEntry{
-			Name: node.fullName, DisplayName: node.segment, Kind: "dir", Mode: "drwxr-xr-x",
-			Depth: len(ancestorLast), Synthetic: true, SymbolKind: 3,
-		}
-		if len(node.entries) != 0 {
-			entry = node.entries[0]
-			entry.DisplayName = node.segment
-			entry.Depth = len(ancestorLast)
-		}
-		if entry.Kind == "dir" || len(node.children) != 0 {
-			entry.DisplayName = strings.TrimSuffix(entry.DisplayName, "/") + "/"
-		}
-		entry.TreePrefix = tarTreePrefix(ancestorLast, last)
-		*rows = append(*rows, entry)
-		if len(node.entries) > 1 {
-			for _, duplicate := range node.entries[1:] {
-				duplicate.DisplayName = node.segment
-				duplicate.Depth = len(ancestorLast)
-				duplicate.TreePrefix = tarTreePrefix(ancestorLast, last)
-				*rows = append(*rows, duplicate)
-			}
-		}
-		flattenTarTree(node, append(ancestorLast, last), rows)
+	rowCount := 0
+	for _, children := range direct {
+		rowCount += len(children)
 	}
+	rows := make([]tarEntry, 0, rowCount)
+	for i, name := range names {
+		last := i == len(names)-1
+		for _, entry := range direct[name] {
+			entry.DisplayName = path.Base(strings.TrimSuffix(entry.Name, "/"))
+			if entry.Kind == "dir" {
+				entry.DisplayName += "/"
+			}
+			entry.Depth = 0
+			entry.TreePrefix = tarTreePrefix(nil, last)
+			rows = append(rows, entry)
+		}
+	}
+	return rows
 }
 
 func tarTreePrefix(ancestorLast []bool, last bool) string {
@@ -385,15 +379,19 @@ func tarTreePrefix(ancestorLast []bool, last bool) string {
 	return b.String()
 }
 
-func renderTarView(meta []byte, entries []tarEntry) []byte {
+func renderTarView(meta []byte, entries []tarEntry, directory string) []byte {
 	var out bytes.Buffer
 	var payload int64
 	for _, entry := range entries {
 		payload += entry.Size
 	}
-	fmt.Fprintf(&out, "# tar · %d entries · %d payload bytes\n", len(entries), payload)
+	location := "/"
+	if directory = normalizedTarPath(directory); directory != "" && directory != "." {
+		location += directory + "/"
+	}
+	fmt.Fprintf(&out, "# tar · %s · %d entries · %d payload bytes\n", location, len(entries), payload)
 	fmt.Fprintln(&out, "/")
-	for _, entry := range layoutTarEntries(entries) {
+	for _, entry := range directoryTarEntries(entries, directory) {
 		fmt.Fprintf(&out, "%s%s", entry.TreePrefix, entry.DisplayName)
 		if entry.LinkName != "" {
 			fmt.Fprintf(&out, " → %s", entry.LinkName)

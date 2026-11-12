@@ -37,6 +37,7 @@ type metadata struct {
 
 type document struct {
 	uri          string
+	archiveURI   string
 	meta         metadata
 	trace        *deflate.Trace
 	revision     [sha256.Size]byte
@@ -46,6 +47,7 @@ type document struct {
 	lineLen      map[int]int
 	tokens       map[int]opTokens
 	tar          map[int]tarEntry
+	catalog      []tarEntry
 	encoding     map[string]encodingNode
 	encodingLine map[int]string
 	encodingTok  map[string]encodingTokens
@@ -99,7 +101,7 @@ func DisassembleFileView(source string, raw bool, view string) ([]byte, error) {
 			if err != nil {
 				return nil, err
 			}
-			return renderTarView(meta, entries), nil
+			return renderTarView(meta, entries, ""), nil
 		}
 		if view == "tar" {
 			return nil, fmt.Errorf("decoded output is not a tar archive")
@@ -143,7 +145,7 @@ func disassembleView(source string, raw bool, trace *deflate.Trace, requested st
 		return nil, err
 	}
 	if view == "tar" {
-		return renderTarView(meta, entries), nil
+		return renderTarView(meta, entries, ""), nil
 	}
 	var out bytes.Buffer
 	out.WriteString("# DEFLATE trace · gd: value → code → header → RFC 1951\n")
@@ -251,7 +253,9 @@ func openDerivedDocument(uri, text string, source *document) *document {
 	if source != nil {
 		doc.revision = source.revision
 		doc.trace = source.trace
+		doc.archiveURI = source.archiveURI
 	} else if doc.meta.View == "tar" {
+		doc.archiveURI = uri
 		var err error
 		doc.revision, err = quickFileRevision(doc.meta.Source)
 		if err != nil {
@@ -314,16 +318,24 @@ func openDerivedDocument(uri, text string, source *document) *document {
 		}
 	}
 	if doc.loadErr == nil && doc.meta.View == "tar" {
-		entries, ok, err := scanTarFile(doc.meta.Source, doc.meta.Raw)
-		if err != nil {
-			doc.loadErr = err
-			return doc
+		entries := doc.catalog
+		if source != nil {
+			entries = source.catalog
+		} else {
+			var ok bool
+			var err error
+			entries, ok, err = scanTarFile(doc.meta.Source, doc.meta.Raw)
+			if err != nil {
+				doc.loadErr = err
+				return doc
+			}
+			if !ok {
+				doc.loadErr = fmt.Errorf("document requests tar view but decoded output is not tar")
+				return doc
+			}
 		}
-		if !ok {
-			doc.loadErr = fmt.Errorf("document requests tar view but decoded output is not tar")
-			return doc
-		}
-		rows := layoutTarEntries(entries)
+		doc.catalog = entries
+		rows := directoryTarEntries(entries, doc.meta.Entry)
 		if len(rows) != len(tarLines) {
 			doc.loadErr = fmt.Errorf("tar listing has %d entry lines, want %d", len(tarLines), len(rows))
 			return doc
@@ -535,7 +547,7 @@ func parse(data []byte, raw bool) (*deflate.Trace, error) {
 	return deflate.ParseRaw(data)
 }
 
-func ensureTrace(doc *document) error {
+func (s *Server) ensureTrace(doc *document) error {
 	if doc.trace != nil {
 		return nil
 	}
@@ -543,7 +555,16 @@ func ensureTrace(doc *document) error {
 	if err != nil {
 		return err
 	}
-	doc.trace, err = parse(data, doc.meta.Raw)
+	trace, err := parse(data, doc.meta.Raw)
+	if err != nil {
+		return err
+	}
+	for _, candidate := range s.docs {
+		if candidate.meta.Source == doc.meta.Source && candidate.revision == doc.revision {
+			candidate.trace = trace
+		}
+	}
+	doc.trace = trace
 	return err
 }
 

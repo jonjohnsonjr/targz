@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -388,14 +389,14 @@ func (s *Server) handle(method string, raw json.RawMessage) (any, error) {
 			}
 			if containsPosition(entry.LinkToken, at) && entry.LinkName != "" {
 				if target, found := doc.tarEntryByName(resolvedTarLink(entry)); found {
-					return doc.tarReferences(target, params.Context.IncludeDeclaration), nil
+					return s.tarReferences(doc, target, params.Context.IncludeDeclaration)
 				}
 				return []location{}, nil
 			}
 			if !containsPosition(entry.NameToken, at) {
 				return []location{}, nil
 			}
-			return doc.tarReferences(entry, params.Context.IncludeDeclaration), nil
+			return s.tarReferences(doc, entry, params.Context.IncludeDeclaration)
 		}
 		if doc, node, ok, err := s.encodingAt(raw); err != nil {
 			return nil, err
@@ -428,6 +429,7 @@ func (s *Server) handle(method string, raw json.RawMessage) (any, error) {
 			}
 			if containsPosition(entry.LinkToken, at) && entry.LinkName != "" {
 				if target, found := doc.tarEntryByName(resolvedTarLink(entry)); found {
+					target.NameToken = entry.LinkToken
 					entry = target
 				} else {
 					return []locationLink{}, nil
@@ -997,31 +999,12 @@ func (d *document) tarHover(entry tarEntry) string {
 
 func (d *document) tarEntryByName(name string) (tarEntry, bool) {
 	want := normalizedTarPath(name)
-	lines := make([]int, 0, len(d.tar))
-	for line := range d.tar {
-		lines = append(lines, line)
-	}
-	sort.Ints(lines)
-	for _, line := range lines {
-		entry := d.tar[line]
+	for _, entry := range d.catalog {
 		if !entry.Synthetic && normalizedTarPath(entry.Name) == want {
 			return entry, true
 		}
 	}
 	return tarEntry{}, false
-}
-
-func (d *document) tarReferences(target tarEntry, includeDeclaration bool) []location {
-	locations := make([]location, 0)
-	if includeDeclaration {
-		locations = append(locations, location{URI: d.uri, Range: target.NameToken})
-	}
-	for _, entry := range d.tar {
-		if entry.LinkName != "" && resolvedTarLink(entry) == normalizedTarPath(target.Name) {
-			locations = append(locations, location{URI: d.uri, Range: entry.LinkToken})
-		}
-	}
-	return locations
 }
 
 func (d *document) location(id int) location {
@@ -1138,7 +1121,7 @@ func (s *Server) encodingReferences(d *document, node encodingNode, includeDecla
 }
 
 func (s *Server) tarDefinition(d *document, entry tarEntry, at position) (locationLink, bool, error) {
-	if entry.Synthetic || (!containsPosition(entry.NameToken, at) && !containsPosition(entry.LinkToken, at)) {
+	if !containsPosition(entry.NameToken, at) && !containsPosition(entry.LinkToken, at) {
 		return locationLink{}, false, nil
 	}
 	if entry.LinkName != "" {
@@ -1150,12 +1133,33 @@ func (s *Server) tarDefinition(d *document, entry tarEntry, at position) (locati
 		if containsPosition(entry.NameToken, at) {
 			origin = entry.NameToken
 		}
+		targetDoc, err := s.tarDirectoryDocument(d, path.Dir(normalizedTarPath(target.Name)))
+		if err != nil {
+			return locationLink{}, false, err
+		}
+		target, ok = targetDoc.visibleTarEntry(target)
+		if !ok {
+			return locationLink{}, false, fmt.Errorf("generated tar directory is missing %s", target.Name)
+		}
 		return locationLink{
 			OriginSelectionRange: origin,
-			TargetURI:            d.uri,
-			TargetRange:          d.lineRange(target.Line),
+			TargetURI:            targetDoc.uri,
+			TargetRange:          targetDoc.lineRange(target.Line),
 			TargetSelectionRange: target.NameToken,
 		}, true, nil
+	}
+	if entry.Kind == "dir" && containsPosition(entry.NameToken, at) {
+		directoryDoc, err := s.tarDirectoryDocument(d, entry.Name)
+		if err != nil {
+			return locationLink{}, false, err
+		}
+		return locationLink{
+			OriginSelectionRange: entry.NameToken, TargetURI: directoryDoc.uri,
+			TargetRange: lspRange{}, TargetSelectionRange: lspRange{},
+		}, true, nil
+	}
+	if entry.Synthetic {
+		return locationLink{}, false, nil
 	}
 	if entry.Kind != "file" || !containsPosition(entry.NameToken, at) {
 		return locationLink{}, false, nil
@@ -1172,13 +1176,103 @@ func (s *Server) tarDefinition(d *document, entry tarEntry, at position) (locati
 	}, true, nil
 }
 
+func (d *document) visibleTarEntry(want tarEntry) (tarEntry, bool) {
+	for _, entry := range d.tar {
+		if !entry.Synthetic && entry.Index == want.Index && normalizedTarPath(entry.Name) == normalizedTarPath(want.Name) {
+			return entry, true
+		}
+	}
+	return tarEntry{}, false
+}
+
+func (s *Server) tarDirectoryDocument(d *document, directory string) (*document, error) {
+	directory = normalizedTarPath(directory)
+	if directory == "." {
+		directory = ""
+	}
+	if directory == "" && d.archiveURI != "" {
+		if root, ok := s.docs[d.archiveURI]; ok {
+			return root, nil
+		}
+	}
+	if directory == normalizedTarPath(d.meta.Entry) {
+		return d, nil
+	}
+	root, err := s.archiveGeneratedRoot(d)
+	if err != nil {
+		return nil, err
+	}
+	rel := "root"
+	if directory != "" {
+		rel = generatedEntryPath(directory)
+	}
+	path := filepath.Join(root, ".gzpls", "tree", rel+".deflate")
+	uri := fileURI(path)
+	if existing, ok := s.docs[uri]; ok {
+		return existing, nil
+	}
+	meta := d.meta
+	meta.View = "tar"
+	meta.Entry = directory
+	encoded, err := json.Marshal(meta)
+	if err != nil {
+		return nil, err
+	}
+	listing := renderTarView(encoded, d.catalog, directory)
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return nil, fmt.Errorf("create tar directory document: %w", err)
+	}
+	if err := os.WriteFile(path, listing, 0o600); err != nil {
+		return nil, fmt.Errorf("write tar directory document: %w", err)
+	}
+	doc := openDerivedDocument(uri, string(listing), d)
+	if doc.loadErr != nil {
+		return nil, fmt.Errorf("open tar directory document: %w", doc.loadErr)
+	}
+	s.docs[uri] = doc
+	return doc, nil
+}
+
+func (s *Server) tarReferences(d *document, target tarEntry, includeDeclaration bool) ([]location, error) {
+	type reference struct {
+		entry       tarEntry
+		declaration bool
+	}
+	var references []reference
+	if includeDeclaration {
+		references = append(references, reference{entry: target, declaration: true})
+	}
+	for _, entry := range d.catalog {
+		if entry.LinkName != "" && resolvedTarLink(entry) == normalizedTarPath(target.Name) {
+			references = append(references, reference{entry: entry})
+		}
+	}
+	locations := make([]location, 0, len(references))
+	for _, ref := range references {
+		doc, err := s.tarDirectoryDocument(d, path.Dir(normalizedTarPath(ref.entry.Name)))
+		if err != nil {
+			return nil, err
+		}
+		visible, ok := doc.visibleTarEntry(ref.entry)
+		if !ok {
+			continue
+		}
+		r := visible.LinkToken
+		if ref.declaration {
+			r = visible.NameToken
+		}
+		locations = append(locations, location{URI: doc.uri, Range: r})
+	}
+	return locations, nil
+}
+
 func (s *Server) tarContentDocument(d *document, entry tarEntry) (string, error) {
 	dir, err := s.archiveGeneratedRoot(d)
 	if err != nil {
 		return "", err
 	}
 	rel := generatedEntryPath(entry.Name)
-	for _, candidate := range d.tar {
+	for _, candidate := range d.catalog {
 		if !candidate.Synthetic && candidate.Index < entry.Index && normalizedTarPath(candidate.Name) == normalizedTarPath(entry.Name) {
 			rel += fmt.Sprintf("~%d", entry.Index)
 			break
@@ -1356,7 +1450,7 @@ func (s *Server) tarImplementations(d *document, entry tarEntry) ([]locationLink
 	if entry.Synthetic {
 		return []locationLink{}, nil
 	}
-	if err := ensureTrace(d); err != nil {
+	if err := s.ensureTrace(d); err != nil {
 		return nil, fmt.Errorf("load DEFLATE trace: %w", err)
 	}
 	query := entry.Data
