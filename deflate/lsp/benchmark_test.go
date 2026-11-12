@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"testing"
@@ -48,6 +49,7 @@ func benchmarkTarGzip(b *testing.B) string {
 }
 
 func BenchmarkDisassembleTar(b *testing.B) {
+	b.Setenv("GZPLS_CACHE_DIR", b.TempDir())
 	source := benchmarkTarGzip(b)
 	data, err := os.ReadFile(source)
 	if err != nil {
@@ -58,11 +60,25 @@ func BenchmarkDisassembleTar(b *testing.B) {
 		b.Fatal(err)
 	}
 	b.Logf("trace: %d operations, %d blocks", len(trace.Ops), len(trace.Blocks))
+	if _, _, err := scanTarFile(source, false); err != nil {
+		b.Fatal(err)
+	}
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		if _, err := DisassembleFileView(source, false, "tar"); err != nil {
 			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkBuildTarCatalog(b *testing.B) {
+	source := benchmarkTarGzip(b)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, ok, _, err := buildTarCatalog(source, false); err != nil || !ok {
+			b.Fatalf("buildTarCatalog = %v, %v", ok, err)
 		}
 	}
 }
@@ -84,6 +100,7 @@ func BenchmarkParseTarGzip(b *testing.B) {
 }
 
 func BenchmarkOpenTarDocument(b *testing.B) {
+	b.Setenv("GZPLS_CACHE_DIR", b.TempDir())
 	source := benchmarkTarGzip(b)
 	listing, err := DisassembleFileView(source, false, "tar")
 	if err != nil {
@@ -98,4 +115,38 @@ func BenchmarkOpenTarDocument(b *testing.B) {
 			b.Fatal(doc.loadErr)
 		}
 	}
+}
+
+func BenchmarkExtractLateTarMember(b *testing.B) {
+	b.Setenv("GZPLS_CACHE_DIR", b.TempDir())
+	source := benchmarkTarGzip(b)
+	entries, ok, err := scanTarFile(source, false)
+	if err != nil || !ok {
+		b.Fatalf("scanTarFile = %v, %v", ok, err)
+	}
+	entry := entries[len(entries)-1]
+	revision, err := quickFileRevision(source)
+	if err != nil {
+		b.Fatal(err)
+	}
+	catalog, ok := loadTarCatalog(revision, false)
+	if !ok {
+		b.Fatal("catalog was not persisted")
+	}
+	b.Run("sequential", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			if err := copyTarEntrySequential(source, false, entry.Index, io.Discard); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+	b.Run("checkpoint", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			if err := copyIndexedTarEntry(source, catalog.GSIPIndex, entry, io.Discard); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
 }

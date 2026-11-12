@@ -1201,7 +1201,7 @@ func (s *Server) tarContentDocument(d *document, entry tarEntry) (string, error)
 	}
 	tmpPath := tmp.Name()
 	defer os.Remove(tmpPath)
-	if err := copyTarEntry(d.meta.Source, d.meta.Raw, entry.Index, tmp); err != nil {
+	if err := copyTarEntry(d.meta.Source, d.meta.Raw, entry, tmp); err != nil {
 		tmp.Close()
 		return "", fmt.Errorf("extract tar entry %s: %w", entry.Name, err)
 	}

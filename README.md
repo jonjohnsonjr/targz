@@ -57,7 +57,8 @@ go run ./cmd/gzpls serve
 ```
 
 The generated document starts with the absolute path of its compressed source.
-The server reparses that source when the document opens, so it can answer
+Trace documents reparse that source when the document opens, so the server can
+answer
 `textDocument/prepareCallHierarchy`, `callHierarchy/incomingCalls`,
 `callHierarchy/outgoingCalls`, and hover requests using the bit-exact trace. It
 also maps the editor's most important navigation commands onto provenance:
@@ -86,8 +87,11 @@ The default `auto` view recognizes decoded tar streams by parsing their headers
 and checksums rather than trusting the filename. Tarballs open as a minimal
 filesystem tree, including implicit parent directories and link arrows. The
 details stay out of the document: hover shows type, mode, size, modification
-time, decoded ranges, and DEFLATE provenance, while document symbols mirror the
-directory hierarchy.
+time, and decoded ranges, while document symbols mirror the directory
+hierarchy. Tar browsing streams the decoded archive and does not retain its
+payload or build the full DEFLATE trace. Requesting provenance with **Go to
+Implementation** loads that trace on demand; subsequent hovers also summarize
+the producing operations.
 
 On an entry name, **Go to Definition** opens the exact extracted text under its
 natural archive path (or a compact hex view for binary data). These file-backed
@@ -98,6 +102,16 @@ boundary into a compact provenance document grouped by DEFLATE block and
 operation kind; definition on one of those groups drills into the individual
 producing operations. Use `disassemble -view trace` to force the instruction
 listing, or `-view tar` to require a valid tar archive.
+
+Successful tar scans are cached beneath the platform user-cache directory in a
+versioned, disposable `gzpls` catalog. Set `GZPLS_CACHE_DIR` to override the
+location. The catalog contains compact tar metadata and, for gzip inputs, the
+existing `gsip` DEFLATE restart checkpoints. Reopening an unchanged archive
+avoids the decompression scan, and opening a late member resumes near its
+decoded range instead of inflating from byte zero. Raw DEFLATE catalogs persist
+too, but member extraction remains sequential because `gsip` checkpoints carry
+gzip framing state. Corrupt or incompatible cache files are ignored and
+rebuilt; no sidecar is written next to the archive.
 
 When opening `.tar.gz` directly in Neovim, disable its built-in gzip and tar
 read handlers before registering the `gzpls` `BufReadCmd`:

@@ -8,6 +8,7 @@ import (
 	"compress/gzip"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"path"
 	"sort"
@@ -15,6 +16,7 @@ import (
 	"unicode"
 
 	"github.com/jonjohnsonjr/targz/deflate"
+	"github.com/jonjohnsonjr/targz/gsip"
 )
 
 type tarEntry struct {
@@ -66,37 +68,120 @@ func parseTarView(output []byte) ([]tarEntry, bool) {
 }
 
 func scanTarFile(source string, raw bool) ([]tarEntry, bool, error) {
-	f, err := os.Open(source)
+	revision, err := quickFileRevision(source)
 	if err != nil {
 		return nil, false, err
+	}
+	if catalog, ok := loadTarCatalog(revision, raw); ok {
+		return catalog.Entries, true, nil
+	}
+	entries, isTar, index, err := buildTarCatalog(source, raw)
+	if err == nil && isTar {
+		_ = saveTarCatalog(revision, raw, entries, index)
+	}
+	return entries, isTar, err
+}
+
+func buildTarCatalog(source string, raw bool) ([]tarEntry, bool, []byte, error) {
+	f, err := os.Open(source)
+	if err != nil {
+		return nil, false, nil, err
 	}
 	defer f.Close()
 
 	input := bufio.NewReader(f)
 	magic, _ := input.Peek(2)
-	var decoded io.ReadCloser
 	if !raw && len(magic) == 2 && magic[0] == 0x1f && magic[1] == 0x8b {
-		decoded, err = gzip.NewReader(input)
-	} else {
-		decoded = flate.NewReader(input)
+		return buildIndexedGzipCatalog(f)
 	}
-	if err != nil {
-		return nil, false, err
-	}
+	decoded := flate.NewReader(input)
 	defer decoded.Close()
 
 	cr := &tarCountReader{r: decoded}
 	entries, scanErr := scanTarReader(cr)
 	if scanErr != nil {
-		return nil, false, nil
+		return nil, false, nil, nil
 	}
 	if _, err := io.Copy(io.Discard, cr); err != nil {
-		return nil, false, err
+		return nil, false, nil, err
 	}
-	return entries, tarScanValid(cr, entries), nil
+	return entries, tarScanValid(cr, entries), nil, nil
 }
 
-func copyTarEntry(source string, raw bool, index int, dst io.Writer) error {
+func buildIndexedGzipCatalog(f *os.File) ([]tarEntry, bool, []byte, error) {
+	info, err := f.Stat()
+	if err != nil {
+		return nil, false, nil, err
+	}
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		return nil, false, nil, err
+	}
+	zr, err := gsip.NewReader(f, info.Size())
+	if err != nil {
+		return nil, false, nil, err
+	}
+	cr := &tarCountReader{r: io.NewSectionReader(zr, 0, math.MaxInt64)}
+	entries, scanErr := scanTarReader(cr)
+	_, drainErr := io.Copy(io.Discard, cr)
+	zr.Wait()
+	if drainErr != nil {
+		return nil, false, nil, drainErr
+	}
+	if scanErr != nil {
+		return nil, false, nil, nil
+	}
+	valid := tarScanValid(cr, entries)
+	if !valid {
+		return entries, false, nil, nil
+	}
+	var index bytes.Buffer
+	if err := zr.Encode(&index); err != nil {
+		return nil, false, nil, err
+	}
+	return entries, true, index.Bytes(), nil
+}
+
+func copyTarEntry(source string, raw bool, entry tarEntry, dst io.Writer) error {
+	if !raw {
+		revision, err := quickFileRevision(source)
+		if err == nil {
+			if catalog, ok := loadTarCatalog(revision, raw); ok && len(catalog.GSIPIndex) != 0 {
+				return copyIndexedTarEntry(source, catalog.GSIPIndex, entry, dst)
+			}
+		}
+	}
+	return copyTarEntrySequential(source, raw, entry.Index, dst)
+}
+
+func copyIndexedTarEntry(source string, index []byte, entry tarEntry, dst io.Writer) error {
+	f, err := os.Open(source)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		return err
+	}
+	return copyIndexedTarEntryAt(f, info.Size(), index, entry, dst)
+}
+
+func copyIndexedTarEntryAt(ra io.ReaderAt, size int64, index []byte, entry tarEntry, dst io.Writer) error {
+	zr, err := gsip.Decode(ra, size, bytes.NewReader(index))
+	if err != nil {
+		return err
+	}
+	n, err := io.Copy(dst, io.NewSectionReader(zr, int64(entry.Data.Start), entry.Size))
+	if err != nil {
+		return err
+	}
+	if n != entry.Size {
+		return io.ErrUnexpectedEOF
+	}
+	return nil
+}
+
+func copyTarEntrySequential(source string, raw bool, index int, dst io.Writer) error {
 	f, err := os.Open(source)
 	if err != nil {
 		return err
