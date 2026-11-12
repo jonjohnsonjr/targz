@@ -47,7 +47,6 @@ type document struct {
 	lineLen      map[int]int
 	tokens       map[int]opTokens
 	tar          map[int]tarEntry
-	catalog      []tarEntry
 	encoding     map[string]encodingNode
 	encodingLine map[int]string
 	encodingTok  map[string]encodingTokens
@@ -92,7 +91,7 @@ func DisassembleFileView(source string, raw bool, view string) ([]byte, error) {
 		return nil, err
 	}
 	if view == "auto" || view == "tar" {
-		entries, isTar, err := scanTarFile(abs, raw)
+		entries, header, isTar, err := scanTarDirectory(abs, raw, "")
 		if err != nil {
 			return nil, err
 		}
@@ -101,7 +100,7 @@ func DisassembleFileView(source string, raw bool, view string) ([]byte, error) {
 			if err != nil {
 				return nil, err
 			}
-			return renderTarView(meta, entries, ""), nil
+			return renderTarView(meta, entries, "", header.Count, header.Payload), nil
 		}
 		if view == "tar" {
 			return nil, fmt.Errorf("decoded output is not a tar archive")
@@ -145,7 +144,12 @@ func disassembleView(source string, raw bool, trace *deflate.Trace, requested st
 		return nil, err
 	}
 	if view == "tar" {
-		return renderTarView(meta, entries, ""), nil
+		rows := directoryTarEntries(entries, "")
+		var payload uint64
+		for _, entry := range entries {
+			payload += uint64(max(entry.Size, 0))
+		}
+		return renderTarView(meta, rows, "", uint64(len(entries)), payload), nil
 	}
 	var out bytes.Buffer
 	out.WriteString("# DEFLATE trace · gd: value → code → header → RFC 1951\n")
@@ -318,32 +322,23 @@ func openDerivedDocument(uri, text string, source *document) *document {
 		}
 	}
 	if doc.loadErr == nil && doc.meta.View == "tar" {
-		entries := doc.catalog
-		if source != nil {
-			entries = source.catalog
-		} else {
-			var ok bool
-			var err error
-			entries, ok, err = scanTarFile(doc.meta.Source, doc.meta.Raw)
-			if err != nil {
-				doc.loadErr = err
-				return doc
-			}
-			if !ok {
-				doc.loadErr = fmt.Errorf("document requests tar view but decoded output is not tar")
-				return doc
-			}
-		}
-		doc.catalog = entries
-		rows := directoryTarEntries(entries, doc.meta.Entry)
-		if len(rows) != len(tarLines) {
-			doc.loadErr = fmt.Errorf("tar listing has %d entry lines, want %d", len(tarLines), len(rows))
+		entries, _, ok, err := scanTarDirectory(doc.meta.Source, doc.meta.Raw, doc.meta.Entry)
+		if err != nil {
+			doc.loadErr = err
 			return doc
 		}
-		for i := range rows {
-			rows[i].Line = tarLines[i]
-			rows[i].NameToken, rows[i].LinkToken = tarTokenRanges(lineText[tarLines[i]], tarLines[i], rows[i])
-			doc.tar[rows[i].Line] = rows[i]
+		if !ok {
+			doc.loadErr = fmt.Errorf("document requests tar view but decoded output is not tar")
+			return doc
+		}
+		if len(entries) != len(tarLines) {
+			doc.loadErr = fmt.Errorf("tar listing has %d entry lines, want %d", len(tarLines), len(entries))
+			return doc
+		}
+		for i := range entries {
+			entries[i].Line = tarLines[i]
+			entries[i].NameToken, entries[i].LinkToken = tarTokenRanges(lineText[tarLines[i]], tarLines[i], entries[i])
+			doc.tar[entries[i].Line] = entries[i]
 		}
 	}
 	if doc.loadErr == nil && doc.meta.View == "provenance" {

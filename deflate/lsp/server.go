@@ -998,9 +998,12 @@ func (d *document) tarHover(entry tarEntry) string {
 }
 
 func (d *document) tarEntryByName(name string) (tarEntry, bool) {
-	want := normalizedTarPath(name)
-	for _, entry := range d.catalog {
-		if !entry.Synthetic && normalizedTarPath(entry.Name) == want {
+	entries, ok := loadTarPath(d.revision, d.meta.Raw, name)
+	if !ok {
+		return tarEntry{}, false
+	}
+	for _, entry := range entries {
+		if !entry.Synthetic {
 			return entry, true
 		}
 	}
@@ -1218,7 +1221,14 @@ func (s *Server) tarDirectoryDocument(d *document, directory string) (*document,
 	if err != nil {
 		return nil, err
 	}
-	listing := renderTarView(encoded, d.catalog, directory)
+	entries, header, ok, err := scanTarDirectory(d.meta.Source, d.meta.Raw, directory)
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		return nil, fmt.Errorf("decoded output is not a tar archive")
+	}
+	listing := renderTarView(encoded, entries, directory, header.Count, header.Payload)
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return nil, fmt.Errorf("create tar directory document: %w", err)
 	}
@@ -1242,8 +1252,8 @@ func (s *Server) tarReferences(d *document, target tarEntry, includeDeclaration 
 	if includeDeclaration {
 		references = append(references, reference{entry: target, declaration: true})
 	}
-	for _, entry := range d.catalog {
-		if entry.LinkName != "" && resolvedTarLink(entry) == normalizedTarPath(target.Name) {
+	if entries, ok := loadTarLinks(d.revision, d.meta.Raw, target.Name); ok {
+		for _, entry := range entries {
 			references = append(references, reference{entry: entry})
 		}
 	}
@@ -1272,7 +1282,8 @@ func (s *Server) tarContentDocument(d *document, entry tarEntry) (string, error)
 		return "", err
 	}
 	rel := generatedEntryPath(entry.Name)
-	for _, candidate := range d.catalog {
+	candidates, _ := loadTarPath(d.revision, d.meta.Raw, entry.Name)
+	for _, candidate := range candidates {
 		if !candidate.Synthetic && candidate.Index < entry.Index && normalizedTarPath(candidate.Name) == normalizedTarPath(entry.Name) {
 			rel += fmt.Sprintf("~%d", entry.Index)
 			break

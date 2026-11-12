@@ -60,7 +60,7 @@ func BenchmarkDisassembleTar(b *testing.B) {
 		b.Fatal(err)
 	}
 	b.Logf("trace: %d operations, %d blocks", len(trace.Ops), len(trace.Blocks))
-	if _, _, err := scanTarFile(source, false); err != nil {
+	if _, _, _, err := scanTarDirectory(source, false, ""); err != nil {
 		b.Fatal(err)
 	}
 	b.ReportAllocs()
@@ -120,18 +120,17 @@ func BenchmarkOpenTarDocument(b *testing.B) {
 func BenchmarkExtractLateTarMember(b *testing.B) {
 	b.Setenv("GZPLS_CACHE_DIR", b.TempDir())
 	source := benchmarkTarGzip(b)
-	entries, ok, err := scanTarFile(source, false)
+	entries, ok, index, err := buildTarCatalog(source, false)
 	if err != nil || !ok {
-		b.Fatalf("scanTarFile = %v, %v", ok, err)
+		b.Fatalf("buildTarCatalog = %v, %v", ok, err)
 	}
 	entry := entries[len(entries)-1]
 	revision, err := quickFileRevision(source)
 	if err != nil {
 		b.Fatal(err)
 	}
-	catalog, ok := loadTarCatalog(revision, false)
-	if !ok {
-		b.Fatal("catalog was not persisted")
+	if err := saveTarCatalog(revision, false, entries, index); err != nil {
+		b.Fatal(err)
 	}
 	b.Run("sequential", func(b *testing.B) {
 		b.ReportAllocs()
@@ -144,7 +143,7 @@ func BenchmarkExtractLateTarMember(b *testing.B) {
 	b.Run("checkpoint", func(b *testing.B) {
 		b.ReportAllocs()
 		for i := 0; i < b.N; i++ {
-			if err := copyIndexedTarEntry(source, catalog.GSIPIndex, entry, io.Discard); err != nil {
+			if err := copyIndexedTarEntry(source, index, entry, io.Discard); err != nil {
 				b.Fatal(err)
 			}
 		}

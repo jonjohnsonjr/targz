@@ -57,17 +57,20 @@ func TestTarCatalogPersistsRestartCheckpoints(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	entries, ok, err := scanTarFile(source, false)
+	entries, ok, index, err := buildTarCatalog(source, false)
 	if err != nil || !ok || len(entries) != 4 {
-		t.Fatalf("scanTarFile = %d entries, %v, %v", len(entries), ok, err)
+		t.Fatalf("buildTarCatalog = %d entries, %v, %v", len(entries), ok, err)
 	}
 	revision, err := quickFileRevision(source)
 	if err != nil {
 		t.Fatal(err)
 	}
-	catalog, ok := loadTarCatalog(revision, false)
-	if !ok || len(catalog.GSIPIndex) == 0 {
-		t.Fatalf("persistent catalog = %#v, %v", catalog, ok)
+	if err := saveTarCatalog(revision, false, entries, index); err != nil {
+		t.Fatal(err)
+	}
+	loadedIndex, ok := loadGSIPIndex(revision, false)
+	if !ok || len(loadedIndex) == 0 {
+		t.Fatalf("persistent checkpoint index = %d bytes, %v", len(loadedIndex), ok)
 	}
 
 	archive, err := os.Open(source)
@@ -82,7 +85,7 @@ func TestTarCatalogPersistsRestartCheckpoints(t *testing.T) {
 	counted := &countingReaderAt{ReaderAt: archive, min: math.MaxInt64}
 	var extracted bytes.Buffer
 	last := entries[len(entries)-1]
-	if err := copyIndexedTarEntryAt(counted, info.Size(), catalog.GSIPIndex, last, &extracted); err != nil {
+	if err := copyIndexedTarEntryAt(counted, info.Size(), loadedIndex, last, &extracted); err != nil {
 		t.Fatal(err)
 	}
 	if !bytes.Equal(extracted.Bytes(), payload) {
@@ -99,10 +102,10 @@ func TestTarCatalogPersistsRestartCheckpoints(t *testing.T) {
 	if err := os.WriteFile(cachePath, []byte("{broken"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if rebuilt, ok, err := scanTarFile(source, false); err != nil || !ok || len(rebuilt) != len(entries) {
-		t.Fatalf("rebuild corrupt cache = %d entries, %v, %v", len(rebuilt), ok, err)
+	if rebuilt, _, ok, err := scanTarDirectory(source, false, ""); err != nil || !ok || len(rebuilt) == 0 {
+		t.Fatalf("rebuild corrupt cache = %d root entries, %v, %v", len(rebuilt), ok, err)
 	}
-	if _, ok := loadTarCatalog(revision, false); !ok {
+	if _, _, ok := loadTarDirectory(revision, false, ""); !ok {
 		t.Fatal("rebuilt catalog was not persisted")
 	}
 }

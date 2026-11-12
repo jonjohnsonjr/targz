@@ -106,13 +106,16 @@ listing, or `-view tar` to require a valid tar archive.
 
 Successful tar scans are cached beneath the platform user-cache directory in a
 versioned, disposable `gzpls` catalog. Set `GZPLS_CACHE_DIR` to override the
-location. The catalog contains compact tar metadata and, for gzip inputs, the
-existing `gsip` DEFLATE restart checkpoints. Reopening an unchanged archive
-avoids the decompression scan, and opening a late member resumes near its
-decoded range instead of inflating from byte zero. Raw DEFLATE catalogs persist
-too, but member extraction remains sequential because `gsip` checkpoints carry
-gzip framing state. Corrupt or incompatible cache files are ignored and
-rebuilt; no sidecar is written next to the archive.
+location. The catalog is a binary record container with sorted fixed-size
+indexes for directories, paths, and link targets. Lookups binary-search those
+indexes directly on disk and decode only the selected record; they do not load
+the catalog or even its indexes wholesale. For gzip inputs the same file also
+contains the existing `gsip` DEFLATE restart checkpoints. Reopening an unchanged
+archive avoids the decompression scan, and opening a late member resumes near
+its decoded range instead of inflating from byte zero. Raw DEFLATE catalogs
+persist too, but member extraction remains sequential because `gsip`
+checkpoints carry gzip framing state. Corrupt or incompatible cache files are
+ignored and rebuilt; no sidecar is written next to the archive.
 
 Navigation follows the same three questions at every format layer:
 

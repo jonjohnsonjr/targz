@@ -67,19 +67,30 @@ func parseTarView(output []byte) ([]tarEntry, bool) {
 	return entries, tarScanValid(cr, entries)
 }
 
-func scanTarFile(source string, raw bool) ([]tarEntry, bool, error) {
+func scanTarDirectory(source string, raw bool, directory string) ([]tarEntry, catalogHeader, bool, error) {
 	revision, err := quickFileRevision(source)
 	if err != nil {
-		return nil, false, err
+		return nil, catalogHeader{}, false, err
 	}
-	if catalog, ok := loadTarCatalog(revision, raw); ok {
-		return catalog.Entries, true, nil
+	if entries, header, ok := loadTarDirectory(revision, raw, directory); ok {
+		return entries, header, true, nil
 	}
 	entries, isTar, index, err := buildTarCatalog(source, raw)
 	if err == nil && isTar {
 		_ = saveTarCatalog(revision, raw, entries, index)
 	}
-	return entries, isTar, err
+	if err != nil || !isTar {
+		return nil, catalogHeader{}, isTar, err
+	}
+	if rows, header, ok := loadTarDirectory(revision, raw, directory); ok {
+		return rows, header, true, nil
+	}
+	groups, _, _ := catalogGroups(entries)
+	header := catalogHeader{Count: uint64(len(entries))}
+	for _, entry := range entries {
+		header.Payload += uint64(max(entry.Size, 0))
+	}
+	return groups[cleanCatalogDir(directory)], header, true, nil
 }
 
 func buildTarCatalog(source string, raw bool) ([]tarEntry, bool, []byte, error) {
@@ -145,8 +156,8 @@ func copyTarEntry(source string, raw bool, entry tarEntry, dst io.Writer) error 
 	if !raw {
 		revision, err := quickFileRevision(source)
 		if err == nil {
-			if catalog, ok := loadTarCatalog(revision, raw); ok && len(catalog.GSIPIndex) != 0 {
-				return copyIndexedTarEntry(source, catalog.GSIPIndex, entry, dst)
+			if index, ok := loadGSIPIndex(revision, raw); ok {
+				return copyIndexedTarEntry(source, index, entry, dst)
 			}
 		}
 	}
@@ -379,19 +390,15 @@ func tarTreePrefix(ancestorLast []bool, last bool) string {
 	return b.String()
 }
 
-func renderTarView(meta []byte, entries []tarEntry, directory string) []byte {
+func renderTarView(meta []byte, entries []tarEntry, directory string, count, payload uint64) []byte {
 	var out bytes.Buffer
-	var payload int64
-	for _, entry := range entries {
-		payload += entry.Size
-	}
 	location := "/"
 	if directory = normalizedTarPath(directory); directory != "" && directory != "." {
 		location += directory + "/"
 	}
-	fmt.Fprintf(&out, "# tar · %s · %d entries · %d payload bytes\n", location, len(entries), payload)
+	fmt.Fprintf(&out, "# tar · %s · %d entries · %d payload bytes\n", location, count, payload)
 	fmt.Fprintln(&out, "/")
-	for _, entry := range directoryTarEntries(entries, directory) {
+	for _, entry := range entries {
 		fmt.Fprintf(&out, "%s%s", entry.TreePrefix, entry.DisplayName)
 		if entry.LinkName != "" {
 			fmt.Fprintf(&out, " → %s", entry.LinkName)
