@@ -844,12 +844,20 @@ func TestAutoViewDetectsTarAndExposesEntries(t *testing.T) {
 	}
 
 	definition := definitionLinksAtCharacter(t, s, uri, entry.NameToken.Start.Line, entry.NameToken.Start.Character)
-	if len(definition) != 1 || !strings.HasSuffix(definition[0].TargetURI, "readme.txt") {
+	if len(definition) != 1 || !strings.HasSuffix(definition[0].TargetURI, "/docs/readme.txt") {
 		t.Fatalf("tar file definition = %#v, want extracted readme", definition)
 	}
-	extracted, err := os.ReadFile(strings.TrimPrefix(definition[0].TargetURI, "file://"))
+	extractedPath := strings.TrimPrefix(definition[0].TargetURI, "file://")
+	extracted, err := os.ReadFile(extractedPath)
 	if err != nil || !bytes.Equal(extracted, contents) {
 		t.Fatalf("extracted tar definition = %q, %v", extracted, err)
+	}
+	info, err := os.Stat(extractedPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm()&0o222 != 0 {
+		t.Fatalf("extracted tar definition mode = %v; want read-only", info.Mode())
 	}
 	linkDefinition := definitionLinksAtCharacter(t, s, uri, linkEntry.LinkToken.Start.Line, linkEntry.LinkToken.Start.Character)
 	if len(linkDefinition) != 1 || linkDefinition[0].TargetURI != uri || linkDefinition[0].TargetSelectionRange != entry.NameToken {
@@ -890,8 +898,23 @@ func TestAutoViewDetectsTarAndExposesEntries(t *testing.T) {
 		t.Fatal(err)
 	}
 	implementations := result.([]locationLink)
-	if len(implementations) == 0 || !strings.HasSuffix(implementations[0].TargetURI, "trace.deflate") {
-		t.Fatalf("tar implementations = %#v, want generated DEFLATE trace", implementations)
+	if len(implementations) != 1 || !strings.Contains(implementations[0].TargetURI, "/.gzpls/provenance/") {
+		t.Fatalf("tar implementations = %#v, want one summarized provenance document", implementations)
+	}
+	provenanceDoc := s.docs[implementations[0].TargetURI]
+	if provenanceDoc == nil || provenanceDoc.meta.View != "provenance" || len(provenanceDoc.provenance) == 0 {
+		t.Fatalf("provenance document = %#v", provenanceDoc)
+	}
+	if provenanceDoc.trace != doc.trace {
+		t.Fatal("generated provenance document reparsed instead of sharing the archive trace")
+	}
+	provenanceLine := implementations[0].TargetSelectionRange.Start.Line
+	drilldown := definitionLinksAtCharacter(t, s, implementations[0].TargetURI, provenanceLine, 0)
+	if len(drilldown) == 0 || !strings.HasSuffix(drilldown[0].TargetURI, "/.gzpls/trace.deflate") {
+		t.Fatalf("provenance drilldown = %#v, want trace operations", drilldown)
+	}
+	if traceDoc := s.docs[drilldown[0].TargetURI]; traceDoc == nil || traceDoc.trace != doc.trace {
+		t.Fatal("generated trace document reparsed instead of sharing the archive trace")
 	}
 	linkImplementationParams, _ := json.Marshal(map[string]any{
 		"textDocument": map[string]any{"uri": uri},
@@ -901,7 +924,7 @@ func TestAutoViewDetectsTarAndExposesEntries(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if linkImplementations := result.([]locationLink); len(linkImplementations) != len(implementations) {
+	if linkImplementations := result.([]locationLink); len(linkImplementations) != len(implementations) || linkImplementations[0].TargetURI != implementations[0].TargetURI {
 		t.Fatalf("tar link-target implementations = %d, want %d", len(linkImplementations), len(implementations))
 	}
 }

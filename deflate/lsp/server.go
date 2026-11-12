@@ -124,6 +124,14 @@ func (s *Server) handle(method string, raw json.RawMessage) (any, error) {
 		if len(params.ContentChanges) != 0 {
 			text = params.ContentChanges[len(params.ContentChanges)-1].Text
 		}
+		// Generated documents are registered before the editor follows their
+		// definition link. Preserve the shared trace when the ensuing didOpen
+		// echoes the same file back to us instead of parsing the archive again.
+		if method == "textDocument/didOpen" {
+			if existing, ok := s.docs[params.TextDocument.URI]; ok && existing.trace != nil {
+				return nil, nil
+			}
+		}
 		s.docs[params.TextDocument.URI] = openDocument(params.TextDocument.URI, text)
 		return nil, nil
 	case "textDocument/didClose":
@@ -250,6 +258,22 @@ func (s *Server) handle(method string, raw json.RawMessage) (any, error) {
 				return []locationLink{}, nil
 			}
 			return []locationLink{link}, nil
+		}
+		if doc, ids, origin, ok, err := s.provenanceAt(raw); err != nil {
+			return nil, err
+		} else if ok {
+			traceDoc, traceErr := s.tarTraceDocument(doc)
+			if traceErr != nil {
+				return nil, traceErr
+			}
+			links := make([]locationLink, 0, len(ids))
+			for _, id := range ids {
+				links = append(links, locationLink{
+					OriginSelectionRange: origin,
+					TargetURI:            traceDoc.uri, TargetRange: traceDoc.opRange(id), TargetSelectionRange: traceDoc.tokens[id].Output,
+				})
+			}
+			return links, nil
 		}
 		if doc, entry, ok, err := s.tarEntryAt(raw); err != nil {
 			return nil, err
@@ -661,6 +685,34 @@ func (s *Server) tarEntryAt(raw json.RawMessage) (*document, tarEntry, bool, err
 	}
 	entry, ok := doc.tar[params.Position.Line]
 	return doc, entry, ok, nil
+}
+
+func (s *Server) provenanceAt(raw json.RawMessage) (*document, []int, lspRange, bool, error) {
+	var params struct {
+		TextDocument struct {
+			URI string `json:"uri"`
+		} `json:"textDocument"`
+		Position position `json:"position"`
+	}
+	if err := json.Unmarshal(raw, &params); err != nil {
+		return nil, nil, lspRange{}, false, err
+	}
+	doc, ok := s.docs[params.TextDocument.URI]
+	if !ok || doc.meta.View != "provenance" {
+		return nil, nil, lspRange{}, false, nil
+	}
+	if doc.loadErr != nil {
+		return nil, nil, lspRange{}, false, doc.loadErr
+	}
+	ids, ok := doc.provenance[params.Position.Line]
+	if !ok {
+		return doc, nil, lspRange{}, false, nil
+	}
+	origin := doc.lineRange(params.Position.Line)
+	if !containsPosition(origin, params.Position) {
+		return doc, nil, lspRange{}, false, nil
+	}
+	return doc, ids, origin, true, nil
 }
 
 func (s *Server) encodingAt(raw json.RawMessage) (*document, encodingNode, bool, error) {
@@ -1119,7 +1171,7 @@ func (s *Server) tarDefinition(d *document, entry tarEntry, at position) (locati
 }
 
 func (s *Server) tarContentDocument(d *document, entry tarEntry) (string, error) {
-	dir, err := s.ensureGeneratedDir()
+	dir, err := s.archiveGeneratedRoot(d)
 	if err != nil {
 		return "", err
 	}
@@ -1128,19 +1180,41 @@ func (s *Server) tarContentDocument(d *document, entry tarEntry) (string, error)
 		return "", fmt.Errorf("tar payload %s has invalid range [%d:%d)", entry.Name, start, end)
 	}
 	data := d.trace.Output[start:end]
-	base := filepath.Base(strings.TrimSuffix(entry.Name, "/"))
-	if base == "." || base == "" {
-		base = "entry"
+	rel := generatedEntryPath(entry.Name)
+	for _, candidate := range d.tar {
+		if !candidate.Synthetic && candidate.Index < entry.Index && normalizedTarPath(candidate.Name) == normalizedTarPath(entry.Name) {
+			rel += fmt.Sprintf("~%d", entry.Index)
+			break
+		}
 	}
-	path := filepath.Join(dir, fmt.Sprintf("tar-%x-%d-%s", d.revision[:6], entry.Index, base))
+	path := filepath.Join(dir, rel)
 	if !isTextPayload(data) {
 		path += ".hex"
 		data = renderHexPayload(data)
 	}
+	if _, err := os.Stat(path); err == nil {
+		return fileURI(path), nil
+	} else if !os.IsNotExist(err) {
+		return "", fmt.Errorf("inspect extracted tar entry: %w", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return "", fmt.Errorf("create extracted tar entry directory: %w", err)
+	}
 	if err := os.WriteFile(path, data, 0o600); err != nil {
 		return "", fmt.Errorf("write extracted tar entry: %w", err)
 	}
+	if err := os.Chmod(path, 0o400); err != nil {
+		return "", fmt.Errorf("make extracted tar entry read-only: %w", err)
+	}
 	return fileURI(path), nil
+}
+
+func generatedEntryPath(name string) string {
+	clean := normalizedTarPath(name)
+	if clean == "" || clean == "." {
+		clean = "entry"
+	}
+	return filepath.FromSlash(clean)
 }
 
 func isTextPayload(data []byte) bool {
@@ -1188,34 +1262,63 @@ func (s *Server) tarImplementations(d *document, entry tarEntry) ([]locationLink
 	if query.Start == query.End {
 		query = entry.Header
 	}
-	traceDoc, err := s.tarTraceDocument(d)
+	provenanceDoc, err := s.tarProvenanceDocument(d, entry, query)
 	if err != nil {
 		return nil, err
 	}
-	seen := make(map[int]struct{})
-	var links []locationLink
-	for _, production := range d.trace.Producers(query) {
-		id := production.Op.ID
-		if _, ok := seen[id]; ok {
-			continue
-		}
-		seen[id] = struct{}{}
-		links = append(links, locationLink{
-			OriginSelectionRange: entry.NameToken,
-			TargetURI:            traceDoc.uri,
-			TargetRange:          traceDoc.opRange(id),
-			TargetSelectionRange: traceDoc.tokens[id].Output,
-		})
+	lines := make([]int, 0, len(provenanceDoc.provenance))
+	for line := range provenanceDoc.provenance {
+		lines = append(lines, line)
 	}
-	return links, nil
+	sort.Ints(lines)
+	target := lspRange{}
+	if len(lines) != 0 {
+		target = provenanceDoc.lineRange(lines[0])
+	}
+	return []locationLink{{
+		OriginSelectionRange: entry.NameToken,
+		TargetURI:            provenanceDoc.uri, TargetRange: target, TargetSelectionRange: target,
+	}}, nil
+}
+
+func (s *Server) tarProvenanceDocument(d *document, entry tarEntry, query deflate.OutRange) (*document, error) {
+	root, err := s.archiveGeneratedRoot(d)
+	if err != nil {
+		return nil, err
+	}
+	path := filepath.Join(root, ".gzpls", "provenance", generatedEntryPath(entry.Name)+".deflate")
+	uri := fileURI(path)
+	if existing, ok := s.docs[uri]; ok {
+		return existing, nil
+	}
+	meta := metadata{
+		Source: d.meta.Source, Raw: d.meta.Raw, View: "provenance", RFC: d.meta.RFC,
+		Entry: entry.Name, OutputStart: uint64(query.Start), OutputEnd: uint64(query.End),
+	}
+	listing, err := renderProvenanceDocument(meta, d.trace)
+	if err != nil {
+		return nil, err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return nil, fmt.Errorf("create provenance directory: %w", err)
+	}
+	if err := os.WriteFile(path, listing, 0o600); err != nil {
+		return nil, fmt.Errorf("write provenance document: %w", err)
+	}
+	doc := openDerivedDocument(uri, string(listing), d)
+	if doc.loadErr != nil {
+		return nil, fmt.Errorf("open provenance document: %w", doc.loadErr)
+	}
+	s.docs[uri] = doc
+	return doc, nil
 }
 
 func (s *Server) tarTraceDocument(d *document) (*document, error) {
-	dir, err := s.ensureGeneratedDir()
+	dir, err := s.archiveGeneratedRoot(d)
 	if err != nil {
 		return nil, err
 	}
-	path := filepath.Join(dir, fmt.Sprintf("tar-%x-trace.deflate", d.revision[:6]))
+	path := filepath.Join(dir, ".gzpls", "trace.deflate")
 	uri := fileURI(path)
 	if existing, ok := s.docs[uri]; ok {
 		return existing, nil
@@ -1224,15 +1327,30 @@ func (s *Server) tarTraceDocument(d *document) (*document, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return nil, fmt.Errorf("create trace directory: %w", err)
+	}
 	if err := os.WriteFile(path, listing, 0o600); err != nil {
 		return nil, fmt.Errorf("write generated trace: %w", err)
 	}
-	doc := openDocument(uri, string(listing))
+	doc := openDerivedDocument(uri, string(listing), d)
 	if doc.loadErr != nil {
 		return nil, doc.loadErr
 	}
 	s.docs[uri] = doc
 	return doc, nil
+}
+
+func (s *Server) archiveGeneratedRoot(d *document) (string, error) {
+	dir, err := s.ensureGeneratedDir()
+	if err != nil {
+		return "", err
+	}
+	root := filepath.Join(dir, fmt.Sprintf("archive-%x", d.revision[:6]))
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		return "", fmt.Errorf("create archive document root: %w", err)
+	}
+	return root, nil
 }
 
 func (s *Server) ensureGeneratedDir() (string, error) {
@@ -1247,11 +1365,11 @@ func (s *Server) ensureGeneratedDir() (string, error) {
 }
 
 func (s *Server) symbolDocument(traceDoc *document, node encodingNode) (*document, error) {
-	dir, err := s.ensureGeneratedDir()
+	dir, err := s.archiveGeneratedRoot(traceDoc)
 	if err != nil {
 		return nil, err
 	}
-	path := filepath.Join(dir, fmt.Sprintf("block-%d-%x-%s.gzsym", node.BlockID, traceDoc.revision[:6], node.Alphabet))
+	path := filepath.Join(dir, ".gzpls", fmt.Sprintf("block-%d-%s.gzsym", node.BlockID, node.Alphabet))
 	uri := fileURI(path)
 	if doc, ok := s.docs[uri]; ok {
 		return doc, nil
@@ -1264,10 +1382,13 @@ func (s *Server) symbolDocument(traceDoc *document, node encodingNode) (*documen
 	if err != nil {
 		return nil, err
 	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return nil, fmt.Errorf("create symbol table directory: %w", err)
+	}
 	if err := os.WriteFile(path, listing, 0o600); err != nil {
 		return nil, fmt.Errorf("write symbol table: %w", err)
 	}
-	doc := openDocument(uri, string(listing))
+	doc := openDerivedDocument(uri, string(listing), traceDoc)
 	if doc.loadErr != nil {
 		return nil, fmt.Errorf("open symbol table: %w", doc.loadErr)
 	}

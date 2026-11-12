@@ -21,13 +21,16 @@ import (
 const headerPrefix = "# gzpls "
 
 type metadata struct {
-	Source   string `json:"source"`
-	Raw      bool   `json:"raw"`
-	View     string `json:"view,omitempty"`
-	RFC      string `json:"rfc,omitempty"`
-	TraceURI string `json:"traceUri,omitempty"`
-	Block    int    `json:"block,omitempty"`
-	Alphabet string `json:"alphabet,omitempty"`
+	Source      string `json:"source"`
+	Raw         bool   `json:"raw"`
+	View        string `json:"view,omitempty"`
+	RFC         string `json:"rfc,omitempty"`
+	TraceURI    string `json:"traceUri,omitempty"`
+	Block       int    `json:"block,omitempty"`
+	Alphabet    string `json:"alphabet,omitempty"`
+	Entry       string `json:"entry,omitempty"`
+	OutputStart uint64 `json:"outputStart,omitempty"`
+	OutputEnd   uint64 `json:"outputEnd,omitempty"`
 }
 
 type document struct {
@@ -48,6 +51,7 @@ type document struct {
 	lengthDefs   map[int]string
 	distanceDefs map[int]string
 	rfcLines     []string
+	provenance   map[int][]int
 	loadErr      error
 }
 
@@ -154,6 +158,10 @@ func disassembleView(source string, raw bool, trace *deflate.Trace, requested st
 }
 
 func openDocument(uri, text string) *document {
+	return openDerivedDocument(uri, text, nil)
+}
+
+func openDerivedDocument(uri, text string, source *document) *document {
 	if strings.HasSuffix(uri, "/rfc1951.txt") && !strings.Contains(text, headerPrefix) {
 		return openRFCDocument(uri, text)
 	}
@@ -162,10 +170,13 @@ func openDocument(uri, text string) *document {
 		lineLen: make(map[int]int), tokens: make(map[int]opTokens), tar: make(map[int]tarEntry),
 		encoding: make(map[string]encodingNode), encodingLine: make(map[int]string), encodingTok: make(map[string]encodingTokens), literalDefs: make(map[int]string),
 		lengthDefs: make(map[int]string), distanceDefs: make(map[int]string),
+		provenance: make(map[int][]int),
 	}
 	opText := make(map[int]string)
 	var definitionLines []int
 	var tarLines []int
+	var provenanceLines []int
+	isProvenance := strings.HasPrefix(text, "# provenance ")
 	lineText := make(map[int]string)
 	scanner := bufio.NewScanner(strings.NewReader(text))
 	line := 0
@@ -201,6 +212,9 @@ func openDocument(uri, text string) *document {
 		} else if value != "" && inDefinitions && !strings.HasPrefix(value, "#") {
 			definitionLines = append(definitionLines, line)
 		}
+		if isProvenance && value != "" && !strings.HasPrefix(value, "#") && !strings.HasPrefix(value, "block ") {
+			provenanceLines = append(provenanceLines, line)
+		}
 		line++
 	}
 	if err := scanner.Err(); err != nil {
@@ -216,13 +230,18 @@ func openDocument(uri, text string) *document {
 	} else if line > 0 {
 		doc.end = position{Line: line - 1, Character: doc.lineLen[line-1]}
 	}
-	data, err := os.ReadFile(doc.meta.Source)
-	if err != nil {
-		doc.loadErr = err
-		return doc
+	if source != nil {
+		doc.revision = source.revision
+		doc.trace = source.trace
+	} else {
+		data, err := os.ReadFile(doc.meta.Source)
+		if err != nil {
+			doc.loadErr = err
+			return doc
+		}
+		doc.revision = sha256.Sum256(data)
+		doc.trace, doc.loadErr = parse(data, doc.meta.Raw)
 	}
-	doc.revision = sha256.Sum256(data)
-	doc.trace, doc.loadErr = parse(data, doc.meta.Raw)
 	if doc.loadErr == nil && doc.meta.View == "trace" {
 		if nextOp != len(doc.trace.Ops) {
 			doc.loadErr = fmt.Errorf("trace listing has %d operation lines, want %d", nextOp, len(doc.trace.Ops))
@@ -284,6 +303,16 @@ func openDocument(uri, text string) *document {
 			rows[i].Line = tarLines[i]
 			rows[i].NameToken, rows[i].LinkToken = tarTokenRanges(lineText[tarLines[i]], tarLines[i], rows[i])
 			doc.tar[rows[i].Line] = rows[i]
+		}
+	}
+	if doc.loadErr == nil && doc.meta.View == "provenance" {
+		groups := provenanceGroups(doc.trace, deflate.OutRange{Start: deflate.OutPos(doc.meta.OutputStart), End: deflate.OutPos(doc.meta.OutputEnd)})
+		if len(groups) != len(provenanceLines) {
+			doc.loadErr = fmt.Errorf("provenance listing has %d group lines, want %d", len(provenanceLines), len(groups))
+			return doc
+		}
+		for i, group := range groups {
+			doc.provenance[provenanceLines[i]] = group.Ops
 		}
 	}
 	return doc
