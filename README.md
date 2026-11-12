@@ -44,7 +44,30 @@ call hierarchy. A match "calls" the earlier instructions which produced its
 normalized source seed. Its incoming calls are later matches which consume the
 bytes it produced. Literals are constants and matches are functions, obviously.
 
-First produce the textual document the server operates on:
+The easiest Neovim setup is the small repo-supplied configuration, which owns
+only gzip/tar buffers, renders their virtual document, starts the server, keeps
+generated targets attached, and defines `gd`, `gri`, `grr`, and `K`:
+
+```lua
+dofile("/absolute/path/to/targz/contrib/gzpls.lua").setup({
+  cmd = { "/absolute/path/to/gzpls" },
+})
+```
+
+Install the command once, restart Neovim, and open an archive directly:
+
+```console
+go install ./cmd/gzpls
+nvim archive.tar.gz
+```
+
+Place the cursor on a directory or file name and press `gd`. Directories open
+their immediate children; files open their decoded contents. `gri` crosses into
+the DEFLATE operations which physically produce the selected entry, and `grr`
+finds links or copies which refer to it.
+
+For clients other than Neovim, first produce the textual document the server
+operates on:
 
 ```console
 go run ./cmd/gzpls disassemble archive.tar.gz > archive.tar.gz.deflate
@@ -139,8 +162,9 @@ returns to the intersecting plaintext range, while `←distance` continues to
 follow the match's copy source. This makes plaintext → implementation → trace →
 definition → plaintext a lossless navigation loop.
 
-Neovim must attach the already-running gzpls client to these generated buffers
-without changing their normal filetype. This small autocmd is sufficient:
+If configuring Neovim manually instead, it must attach the already-running
+gzpls client to generated buffers without changing their normal filetype. This
+small autocmd is sufficient:
 
 ```lua
 vim.api.nvim_create_autocmd("BufReadPost", {
@@ -155,8 +179,8 @@ vim.api.nvim_create_autocmd("BufReadPost", {
 })
 ```
 
-When opening `.tar.gz` directly in Neovim, disable its built-in gzip and tar
-read handlers before registering the `gzpls` `BufReadCmd`:
+When opening `.tar.gz` directly with a manual configuration, disable its
+built-in gzip and tar read handlers before registering the `gzpls` `BufReadCmd`:
 
 ```lua
 vim.g.loaded_gzip = 1

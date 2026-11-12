@@ -131,3 +131,79 @@ vim.cmd("qa!")
 		t.Fatalf("Neovim result = %q, want ok", result)
 	}
 }
+
+// TestNeovimTarDirectoryNavigation covers the actual user path which the
+// protocol-only tests used to miss: open a compressed archive directly, let the
+// repo config render and attach it, and use Neovim's definition handler to step
+// into a directory.
+func TestNeovimTarDirectoryNavigation(t *testing.T) {
+	if os.Getenv("GZPLS_NVIM_TEST") == "" {
+		t.Skip("set GZPLS_NVIM_TEST=1 to run the headless Neovim smoke test")
+	}
+	nvim, err := exec.LookPath("nvim")
+	if err != nil {
+		t.Skip("Neovim is not installed")
+	}
+	temp := t.TempDir()
+	repo, err := filepath.Abs(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := filepath.Join(repo, "tarfs", "testdata", "gsip.tar.gz")
+	integration := filepath.Join(repo, "contrib", "gzpls.lua")
+	server := filepath.Join(temp, "gzpls")
+	build := exec.Command("go", "build", "-o", server, "./cmd/gzpls")
+	build.Dir = repo
+	if output, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build gzpls: %v\n%s", err, output)
+	}
+
+	marker := filepath.Join(temp, "result")
+	lua := fmt.Sprintf(`
+local source = %s
+local server = %s
+local repo = %s
+local marker = %s
+dofile(%s).setup({cmd = {server}, root_dir = repo})
+vim.cmd("edit " .. vim.fn.fnameescape(source))
+assert(vim.wait(5000, function()
+  return #vim.lsp.get_clients({name = "gzpls", bufnr = 0}) == 1
+end), "gzpls did not attach to archive")
+local line = vim.fn.search("gsip/$", "W")
+assert(line > 0, "archive root has no gsip directory")
+local column = assert(string.find(vim.api.nvim_get_current_line(), "gsip/", 1, true)) - 1
+vim.api.nvim_win_set_cursor(0, {line, column})
+assert(vim.fn.maparg("gd", "n") ~= "", "gzpls did not install gd mapping")
+vim.cmd("normal gd")
+assert(vim.wait(5000, function()
+  return string.match(vim.api.nvim_buf_get_name(0), "/%%.gzpls/tree/gsip%%.deflate$") ~= nil
+end), "definition did not enter gsip directory: " .. vim.api.nvim_buf_get_name(0))
+assert(vim.wait(5000, function()
+  return #vim.lsp.get_clients({name = "gzpls", bufnr = 0}) == 1
+end), "gzpls did not attach to generated directory")
+assert(vim.fn.search("gsip.go", "nw") > 0, "generated directory has no gsip.go entry")
+vim.fn.writefile({"ok"}, marker)
+for _, client in ipairs(vim.lsp.get_clients({name = "gzpls"})) do
+  client:stop(true)
+end
+vim.cmd("qa!")
+`, strconv.Quote(source), strconv.Quote(server), strconv.Quote(repo), strconv.Quote(marker), strconv.Quote(integration))
+	script := filepath.Join(temp, "tar.lua")
+	if err := os.WriteFile(script, []byte(lua), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	command := exec.Command(nvim, "--headless", "-u", "NONE", "-l", script)
+	command.Dir = repo
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("headless Neovim: %v\n%s", err, output)
+	}
+	result, err := os.ReadFile(marker)
+	if err != nil {
+		t.Fatalf("Neovim did not write result marker: %v\n%s", err, output)
+	}
+	if strings.TrimSpace(string(result)) != "ok" {
+		t.Fatalf("Neovim result = %q, want ok", result)
+	}
+}
