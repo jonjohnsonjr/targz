@@ -5,7 +5,9 @@ import (
 	"compress/flate"
 	"compress/gzip"
 	"fmt"
+	"strconv"
 	"testing"
+	"unsafe"
 )
 
 func rawDeflate(t testing.TB, data []byte, level int) []byte {
@@ -77,6 +79,33 @@ func TestAppendMatch(t *testing.T) {
 				t.Fatalf("distance %d length %d: got %x, want %x", distance, length, got, want)
 			}
 		}
+	}
+}
+
+func TestBitReaderBitsAcrossByteBoundaries(t *testing.T) {
+	data := []byte{0x81, 0x7e, 0xa5, 0x5a, 0x13, 0x37, 0xc0, 0xff, 0x42}
+	for start := 0; start < len(data)*8; start++ {
+		for width := 0; width <= 32 && start+width <= len(data)*8; width++ {
+			r := newBitReader(data)
+			r.pos = BitPos(start)
+			got, span, err := r.bits(uint8(width))
+			if err != nil {
+				t.Fatalf("start %d width %d: %v", start, width, err)
+			}
+			var want uint32
+			for i := 0; i < width; i++ {
+				want |= uint32((data[(start+i)/8]>>((start+i)%8))&1) << i
+			}
+			if got != want || span.Start != BitPos(start) || span.End != BitPos(start+width) {
+				t.Fatalf("start %d width %d: got %#x span %v, want %#x [%d:%d]", start, width, got, span, want, start, start+width)
+			}
+		}
+	}
+}
+
+func TestOpStaysCompact(t *testing.T) {
+	if strconv.IntSize == 64 && unsafe.Sizeof(Op{}) > 128 {
+		t.Fatalf("Op is %d bytes, want at most 128", unsafe.Sizeof(Op{}))
 	}
 }
 

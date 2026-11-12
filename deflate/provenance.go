@@ -251,7 +251,7 @@ func (t *Trace) Uses(query OutRange) []Use {
 			continue
 		}
 		op := t.Ops[entry.op]
-		repeats := op.Length / op.Distance
+		repeats := int(op.Length / op.Distance)
 		if op.Length%op.Distance != 0 {
 			repeats++
 		}

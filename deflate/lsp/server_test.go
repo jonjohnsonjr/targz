@@ -298,10 +298,10 @@ func TestMatchOperandsHaveIndependentDefinitions(t *testing.T) {
 	if len(distance) != 1 || s.docs[distance[0].TargetURI].encodingLine[distance[0].TargetSelectionRange.Start.Line] != doc.distanceDefs[matchID] {
 		t.Fatalf("distance definition = %#v, want %q", distance, doc.distanceDefs[matchID])
 	}
-	if length[0].TargetSelectionRange.Start.Line != doc.trace.Ops[matchID].LengthSymbol {
+	if length[0].TargetSelectionRange.Start.Line != int(doc.trace.Ops[matchID].LengthSymbol) {
 		t.Fatalf("length table line = %d, want symbol %d", length[0].TargetSelectionRange.Start.Line, doc.trace.Ops[matchID].LengthSymbol)
 	}
-	if distance[0].TargetSelectionRange.Start.Line != doc.trace.Ops[matchID].DistanceSymbol {
+	if distance[0].TargetSelectionRange.Start.Line != int(doc.trace.Ops[matchID].DistanceSymbol) {
 		t.Fatalf("distance table line = %d, want symbol %d", distance[0].TargetSelectionRange.Start.Line, doc.trace.Ops[matchID].DistanceSymbol)
 	}
 	assignment := definitionLinksAtCharacter(t, s, length[0].TargetURI,
@@ -309,7 +309,7 @@ func TestMatchOperandsHaveIndependentDefinitions(t *testing.T) {
 	if len(assignment) != 1 || !strings.Contains(assignment[0].TargetURI, "litlen-lengths.gzsym") {
 		t.Fatalf("length symbol parent = %#v, want expanded literal/length assignments", assignment)
 	}
-	if assignment[0].TargetSelectionRange.Start.Line != doc.trace.Ops[matchID].LengthSymbol {
+	if assignment[0].TargetSelectionRange.Start.Line != int(doc.trace.Ops[matchID].LengthSymbol) {
 		t.Fatalf("length assignment line = %d, want symbol %d",
 			assignment[0].TargetSelectionRange.Start.Line, doc.trace.Ops[matchID].LengthSymbol)
 	}
@@ -432,7 +432,7 @@ func TestMatchExtraBitsJumpToRFCTableCells(t *testing.T) {
 				t.Fatalf("length symbol definition = %#v, want Huffman symbol document", symbol)
 			}
 			extra := definitionLinksAtCharacter(t, s, uri, tokens.LengthExtra.Start.Line, tokens.LengthExtra.Start.Character)
-			want := rfcAnchors[lengthExtraRFCAnchor(op.LengthSymbol)].Selection
+			want := rfcAnchors[lengthExtraRFCAnchor(int(op.LengthSymbol))].Selection
 			if len(extra) != 1 || !strings.HasSuffix(extra[0].TargetURI, "/doc/rfc1951.txt") || extra[0].TargetSelectionRange != want {
 				t.Fatalf("length extra definition = %#v, want RFC cell %#v", extra, want)
 			}
@@ -447,7 +447,7 @@ func TestMatchExtraBitsJumpToRFCTableCells(t *testing.T) {
 				t.Fatalf("distance symbol definition = %#v, want Huffman symbol document", symbol)
 			}
 			extra := definitionLinksAtCharacter(t, s, uri, tokens.DistanceExtra.Start.Line, tokens.DistanceExtra.Start.Character)
-			want := rfcAnchors[distanceExtraRFCAnchor(op.DistanceSymbol)].Selection
+			want := rfcAnchors[distanceExtraRFCAnchor(int(op.DistanceSymbol))].Selection
 			if len(extra) != 1 || !strings.HasSuffix(extra[0].TargetURI, "/doc/rfc1951.txt") || extra[0].TargetSelectionRange != want {
 				t.Fatalf("distance extra definition = %#v, want RFC cell %#v", extra, want)
 			}

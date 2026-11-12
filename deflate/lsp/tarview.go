@@ -128,6 +128,8 @@ type tarTreeNode struct {
 
 func layoutTarEntries(entries []tarEntry) []tarEntry {
 	root := &tarTreeNode{children: make(map[string]*tarTreeNode)}
+	nodes := 0
+	duplicates := 0
 	for _, entry := range entries {
 		clean := strings.Trim(entry.Name, "/")
 		if clean == "" {
@@ -140,12 +142,16 @@ func layoutTarEntries(entries []tarEntry) []tarEntry {
 			if child == nil {
 				child = &tarTreeNode{segment: part, fullName: strings.Join(parts[:i+1], "/"), children: make(map[string]*tarTreeNode)}
 				node.children[part] = child
+				nodes++
 			}
 			node = child
 		}
+		if len(node.entries) != 0 {
+			duplicates++
+		}
 		node.entries = append(node.entries, entry)
 	}
-	var rows []tarEntry
+	rows := make([]tarEntry, 0, nodes+duplicates)
 	flattenTarTree(root, nil, &rows)
 	return rows
 }

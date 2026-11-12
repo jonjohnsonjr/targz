@@ -89,20 +89,19 @@ func (k OpKind) String() string {
 // Op is one output-producing instruction. Match fields are meaningful only
 // for MatchOp, and Literal is meaningful only for LiteralOp.
 type Op struct {
-	ID      int
-	BlockID int
-	Kind    OpKind
+	ID       int
+	BlockID  int
+	Kind     OpKind
+	Literal  byte
+	Length   uint16
+	Distance uint16
+	// LengthSymbol is the literal/length alphabet symbol (257-285) and
+	// DistanceSymbol is the distance alphabet symbol (0-29) for a match.
+	LengthSymbol   uint16
+	DistanceSymbol uint16
 
 	Input  BitRange
 	Output OutRange
-
-	Literal  byte
-	Length   int
-	Distance int
-	// LengthSymbol is the literal/length alphabet symbol (257-285) and
-	// DistanceSymbol is the distance alphabet symbol (0-29) for a match.
-	LengthSymbol   int
-	DistanceSymbol int
 
 	SymbolBits        BitRange
 	LengthExtraBits   BitRange

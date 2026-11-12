@@ -67,6 +67,22 @@ func BenchmarkDisassembleTar(b *testing.B) {
 	}
 }
 
+func BenchmarkParseTarGzip(b *testing.B) {
+	source := benchmarkTarGzip(b)
+	data, err := os.ReadFile(source)
+	if err != nil {
+		b.Fatal(err)
+	}
+	b.ReportAllocs()
+	b.SetBytes(int64(len(data)))
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := parse(data, false); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
 func BenchmarkOpenTarDocument(b *testing.B) {
 	source := benchmarkTarGzip(b)
 	listing, err := DisassembleFileView(source, false, "tar")

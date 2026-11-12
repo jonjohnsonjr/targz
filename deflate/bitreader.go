@@ -1,6 +1,9 @@
 package deflate
 
-import "io"
+import (
+	"encoding/binary"
+	"io"
+)
 
 type bitReader struct {
 	data []byte
@@ -26,10 +29,23 @@ func (r *bitReader) bits(n uint8) (uint32, BitRange, error) {
 	if n > 32 || r.remaining() < uint64(n) {
 		return 0, BitRange{Start: start, End: r.pos}, io.ErrUnexpectedEOF
 	}
+	if n == 0 {
+		return 0, BitRange{Start: start, End: start}, nil
+	}
+	bytePos := uint64(r.pos) >> 3
+	bitPos := uint64(r.pos) & 7
+	if bytePos+8 <= uint64(len(r.data)) {
+		word := binary.LittleEndian.Uint64(r.data[bytePos:]) >> bitPos
+		mask := (uint64(1) << n) - 1
+		r.pos += BitPos(n)
+		return uint32(word & mask), BitRange{Start: start, End: r.pos}, nil
+	}
+	// The final seven input bytes use the simple path so word loads never read
+	// beyond the supplied slice.
 	var v uint32
 	for i := uint8(0); i < n; i++ {
-		bytePos := uint64(r.pos) >> 3
-		bitPos := uint64(r.pos) & 7
+		bytePos = uint64(r.pos) >> 3
+		bitPos = uint64(r.pos) & 7
 		v |= uint32((r.data[bytePos]>>bitPos)&1) << i
 		r.pos++
 	}
@@ -39,8 +55,14 @@ func (r *bitReader) bits(n uint8) (uint32, BitRange, error) {
 // codeBit reads the next physical bit. Huffman codes use these bits in
 // MSB-first code order even though they are packed into bytes LSB-first.
 func (r *bitReader) codeBit() (uint8, error) {
-	v, _, err := r.bits(1)
-	return uint8(v), err
+	if r.remaining() == 0 {
+		return 0, io.ErrUnexpectedEOF
+	}
+	bytePos := uint64(r.pos) >> 3
+	bitPos := uint64(r.pos) & 7
+	v := (r.data[bytePos] >> bitPos) & 1
+	r.pos++
+	return v, nil
 }
 
 func (r *bitReader) alignByte() BitRange {

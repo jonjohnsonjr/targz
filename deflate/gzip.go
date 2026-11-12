@@ -34,7 +34,7 @@ func ParseGzip(data []byte) (*Trace, error) {
 	// An output-producing instruction generally consumes at least one byte of
 	// compressed input. Cap the hint so a very large input does not require its
 	// entire operation stream to be resident before parsing begins.
-	opCap := min(len(data), 1<<20)
+	opCap := min(len(data)-len(data)/4, 1<<20)
 	t := &Trace{
 		input:  append([]byte(nil), data...),
 		Output: make([]byte, 0, outputCap),

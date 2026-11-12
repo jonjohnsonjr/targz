@@ -173,7 +173,7 @@ func (p *parser) storedBlock(block *Block) error {
 		Kind:    StoredOp,
 		Input:   span,
 		Output:  OutRange{Start: start, End: OutPos(len(p.trace.Output))},
-		Length:  n,
+		Length:  uint16(n),
 	})
 	return nil
 }
@@ -237,10 +237,10 @@ func (p *parser) compressedBlock(block *Block, lit, dist *decoderTable, historyB
 				Kind:              MatchOp,
 				Input:             BitRange{Start: symbolBits.Start, End: p.r.position()},
 				Output:            OutRange{Start: start, End: OutPos(len(p.trace.Output))},
-				Length:            length,
-				Distance:          distanceValue,
-				LengthSymbol:      symbol,
-				DistanceSymbol:    distanceSymbol,
+				Length:            uint16(length),
+				Distance:          uint16(distanceValue),
+				LengthSymbol:      uint16(symbol),
+				DistanceSymbol:    uint16(distanceSymbol),
 				SymbolBits:        symbolBits,
 				LengthExtraBits:   lengthExtraBits,
 				DistanceBits:      distanceBits,

@@ -332,13 +332,13 @@ func (s *Server) handle(method string, raw json.RawMessage) (any, error) {
 		if op.Kind == deflate.MatchOp {
 			tokens := doc.tokens[op.ID]
 			if containsPosition(tokens.LengthExtra, at) {
-				if link, ok := doc.rfcLink(tokens.LengthExtra, lengthExtraRFCAnchor(op.LengthSymbol)); ok {
+				if link, ok := doc.rfcLink(tokens.LengthExtra, lengthExtraRFCAnchor(int(op.LengthSymbol))); ok {
 					return []locationLink{link}, nil
 				}
 				return []locationLink{}, nil
 			}
 			if containsPosition(tokens.DistanceExtra, at) {
-				if link, ok := doc.rfcLink(tokens.DistanceExtra, distanceExtraRFCAnchor(op.DistanceSymbol)); ok {
+				if link, ok := doc.rfcLink(tokens.DistanceExtra, distanceExtraRFCAnchor(int(op.DistanceSymbol))); ok {
 					return []locationLink{link}, nil
 				}
 				return []locationLink{}, nil

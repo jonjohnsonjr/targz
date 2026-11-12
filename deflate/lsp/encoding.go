@@ -47,10 +47,12 @@ func buildEncodingGraph(trace *deflate.Trace) encodingGraph {
 			used[op.BlockID].litlen[int(op.Literal)] = struct{}{}
 			graph.LiteralDefs[op.ID] = litlenLabel(op.BlockID, int(op.Literal))
 		case deflate.MatchOp:
-			used[op.BlockID].litlen[op.LengthSymbol] = struct{}{}
-			used[op.BlockID].distance[op.DistanceSymbol] = struct{}{}
-			graph.LengthDefs[op.ID] = litlenLabel(op.BlockID, op.LengthSymbol)
-			graph.DistanceDefs[op.ID] = distanceLabel(op.BlockID, op.DistanceSymbol)
+			lengthSymbol := int(op.LengthSymbol)
+			distanceSymbol := int(op.DistanceSymbol)
+			used[op.BlockID].litlen[lengthSymbol] = struct{}{}
+			used[op.BlockID].distance[distanceSymbol] = struct{}{}
+			graph.LengthDefs[op.ID] = litlenLabel(op.BlockID, lengthSymbol)
+			graph.DistanceDefs[op.ID] = distanceLabel(op.BlockID, distanceSymbol)
 		}
 	}
 
