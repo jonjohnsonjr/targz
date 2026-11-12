@@ -130,6 +130,31 @@ Navigation follows the same three questions at every format layer:
   links, produced output reports later matches which copy it, and encoding
   definitions report the symbols or fields which depend on them.
 
+Extracted text remains ordinary, syntax-highlightable source, but gzpls keeps
+an invisible mapping from each UTF-16 editor position to its decoded archive
+offset. **Go to Implementation** on a character opens provenance for that exact
+byte range; **Find References** returns later DEFLATE matches which consume it.
+In the trace, Definition on a literal's displayed value or a match's `×length`
+returns to the intersecting plaintext range, while `←distance` continues to
+follow the match's copy source. This makes plaintext → implementation → trace →
+definition → plaintext a lossless navigation loop.
+
+Neovim must attach the already-running gzpls client to these generated buffers
+without changing their normal filetype. This small autocmd is sufficient:
+
+```lua
+vim.api.nvim_create_autocmd("BufReadPost", {
+  callback = function(args)
+    if not vim.api.nvim_buf_get_name(args.buf):find("/gzpls%-generated%-") then
+      return
+    end
+    for _, client in ipairs(vim.lsp.get_clients({ name = "gzpls" })) do
+      vim.lsp.buf_attach_client(args.buf, client.id)
+    end
+  end,
+})
+```
+
 When opening `.tar.gz` directly in Neovim, disable its built-in gzip and tar
 read handlers before registering the `gzpls` `BufReadCmd`:
 

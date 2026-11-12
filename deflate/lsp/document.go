@@ -56,6 +56,13 @@ type document struct {
 	rfcLines     []string
 	provenance   map[int][]int
 	loadErr      error
+	plain        *plaintextDocument
+}
+
+type plaintextDocument struct {
+	entry      tarEntry
+	text       string
+	lineStarts []int
 }
 
 type opTokens struct {
@@ -483,10 +490,11 @@ func opTokenRanges(line string, lineNumber int, op deflate.Op) opTokens {
 	switch op.Kind {
 	case deflate.LiteralOp:
 		bits := byteRange(line, lineNumber, 0, comment)
+		literal := byteRange(line, lineNumber, min(comment+4, len(line)), len(line))
 		return opTokens{
 			Bits:    bits,
-			Literal: byteRange(line, lineNumber, min(comment+4, len(line)), len(line)),
-			Output:  bits,
+			Literal: literal,
+			Output:  literal,
 		}
 	case deflate.MatchOp:
 		separator := strings.Index(line[:comment], "  ")
@@ -494,7 +502,13 @@ func opTokenRanges(line string, lineNumber int, op deflate.Op) opTokens {
 			return opTokens{}
 		}
 		distanceStart := separator + 2
-		backref := byteRange(line, lineNumber, min(comment+4, len(line)), len(line))
+		backrefStart := min(comment+4, len(line))
+		outputStart := strings.LastIndex(line, "×")
+		if outputStart < backrefStart {
+			outputStart = len(line)
+		}
+		backref := byteRange(line, lineNumber, backrefStart, outputStart)
+		output := byteRange(line, lineNumber, outputStart, len(line))
 		lengthSymbol, lengthExtra := operandTokenRanges(line, lineNumber, 0, separator)
 		distanceSymbol, distanceExtra := operandTokenRanges(line, lineNumber, distanceStart, comment)
 		return opTokens{
@@ -505,7 +519,7 @@ func opTokenRanges(line string, lineNumber int, op deflate.Op) opTokens {
 			DistanceSymbol: distanceSymbol,
 			DistanceExtra:  distanceExtra,
 			Backref:        backref,
-			Output:         backref,
+			Output:         output,
 			Seed:           backref,
 		}
 	case deflate.StoredOp:

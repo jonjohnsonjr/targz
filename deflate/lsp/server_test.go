@@ -6,6 +6,7 @@ import (
 	"compress/flate"
 	"compress/gzip"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -882,6 +883,34 @@ func TestAutoViewDetectsTarAndExposesEntries(t *testing.T) {
 	}
 	if doc.trace != nil {
 		t.Fatal("extracting one tar member eagerly loaded the DEFLATE trace")
+	}
+	didOpen, _ := json.Marshal(map[string]any{
+		"textDocument": map[string]any{"uri": definition[0].TargetURI, "text": string(contents)},
+	})
+	if _, err := s.handle("textDocument/didOpen", didOpen); err != nil {
+		t.Fatal(err)
+	}
+	plainImplementation, _ := json.Marshal(map[string]any{
+		"textDocument": map[string]any{"uri": definition[0].TargetURI},
+		"position":     map[string]any{"line": 0, "character": 1},
+	})
+	result, err = s.handle("textDocument/implementation", plainImplementation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plainLinks := result.([]locationLink)
+	if len(plainLinks) != 1 || !strings.Contains(plainLinks[0].TargetURI, fmt.Sprintf("~%d-%d.deflate", entry.Data.Start+1, entry.Data.Start+2)) {
+		t.Fatalf("plaintext implementation = %#v", plainLinks)
+	}
+	plainProvenance := s.docs[plainLinks[0].TargetURI]
+	plainLine := plainLinks[0].TargetSelectionRange.Start.Line
+	toTrace := definitionLinksAtCharacter(t, s, plainProvenance.uri, plainLine, 0)
+	if len(toTrace) == 0 {
+		t.Fatal("plaintext provenance did not drill into the trace")
+	}
+	backToPlain := definitionLinksAtCharacter(t, s, toTrace[0].TargetURI, toTrace[0].TargetSelectionRange.Start.Line, toTrace[0].TargetSelectionRange.Start.Character)
+	if len(backToPlain) != 1 || backToPlain[0].TargetURI != definition[0].TargetURI {
+		t.Fatalf("trace output definition = %#v, want plaintext", backToPlain)
 	}
 	linkDefinition := definitionLinksAtCharacter(t, s, uri, linkEntry.LinkToken.Start.Line, linkEntry.LinkToken.Start.Character)
 	if len(linkDefinition) != 1 || linkDefinition[0].TargetURI != directoryURI || linkDefinition[0].TargetSelectionRange != entry.NameToken {

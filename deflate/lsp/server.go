@@ -15,6 +15,7 @@ import (
 	"strings"
 	"sync"
 	"unicode"
+	"unicode/utf16"
 	"unicode/utf8"
 
 	"github.com/jonjohnsonjr/targz/deflate"
@@ -129,8 +130,14 @@ func (s *Server) handle(method string, raw json.RawMessage) (any, error) {
 		// definition link. Preserve the shared trace when the ensuing didOpen
 		// echoes the same file back to us instead of parsing the archive again.
 		if method == "textDocument/didOpen" {
-			if existing, ok := s.docs[params.TextDocument.URI]; ok && existing.trace != nil {
-				return nil, nil
+			if existing, ok := s.docs[params.TextDocument.URI]; ok {
+				if existing.plain != nil {
+					existing.setPlaintext(text)
+					return nil, nil
+				}
+				if existing.trace != nil {
+					return nil, nil
+				}
 			}
 		}
 		s.docs[params.TextDocument.URI] = openDocument(params.TextDocument.URI, text)
@@ -317,6 +324,11 @@ func (s *Server) handle(method string, raw json.RawMessage) (any, error) {
 			return nil, err
 		}
 		if op.Kind == deflate.LiteralOp {
+			if containsPosition(doc.tokens[op.ID].Output, at) {
+				if link, ok := s.plaintextDefinition(*op, doc.tokens[op.ID].Output); ok {
+					return []locationLink{link}, nil
+				}
+			}
 			if label := doc.literalDefs[op.ID]; label != "" {
 				origin := doc.tokens[op.ID].Bits
 				if containsPosition(doc.tokens[op.ID].Literal, at) {
@@ -332,6 +344,11 @@ func (s *Server) handle(method string, raw json.RawMessage) (any, error) {
 		}
 		if op.Kind == deflate.MatchOp {
 			tokens := doc.tokens[op.ID]
+			if containsPosition(tokens.Output, at) {
+				if link, ok := s.plaintextDefinition(*op, tokens.Output); ok {
+					return []locationLink{link}, nil
+				}
+			}
 			if containsPosition(tokens.LengthExtra, at) {
 				if link, ok := doc.rfcLink(tokens.LengthExtra, lengthExtraRFCAnchor(int(op.LengthSymbol))); ok {
 					return []locationLink{link}, nil
@@ -380,6 +397,26 @@ func (s *Server) handle(method string, raw json.RawMessage) (any, error) {
 		if err := json.Unmarshal(raw, &params); err != nil {
 			return nil, err
 		}
+		if doc, query, ok, err := s.plaintextAt(raw); err != nil {
+			return nil, err
+		} else if ok {
+			if err := s.ensureTrace(doc); err != nil {
+				return nil, err
+			}
+			traceDoc, err := s.tarTraceDocument(doc)
+			if err != nil {
+				return nil, err
+			}
+			locations := make([]location, 0)
+			if params.Context.IncludeDeclaration {
+				at, _ := requestPosition(raw)
+				locations = append(locations, location{URI: doc.uri, Range: lspRange{Start: at, End: at}})
+			}
+			for _, use := range doc.trace.Uses(query) {
+				locations = append(locations, traceDoc.location(use.Op.ID))
+			}
+			return locations, nil
+		}
 		if doc, entry, ok, err := s.tarEntryAt(raw); err != nil {
 			return nil, err
 		} else if ok {
@@ -417,6 +454,17 @@ func (s *Server) handle(method string, raw json.RawMessage) (any, error) {
 		}
 		return locations, nil
 	case "textDocument/implementation":
+		if doc, query, ok, err := s.plaintextAt(raw); err != nil {
+			return nil, err
+		} else if ok {
+			if err := s.ensureTrace(doc); err != nil {
+				return nil, err
+			}
+			entry := doc.plain.entry
+			at, _ := requestPosition(raw)
+			entry.NameToken = lspRange{Start: at, End: at}
+			return s.tarImplementationsRange(doc, entry, query)
+		}
 		if doc, entry, ok, err := s.tarEntryAt(raw); err != nil {
 			return nil, err
 		} else if ok {
@@ -1292,7 +1340,11 @@ func (s *Server) tarContentDocument(d *document, entry tarEntry) (string, error)
 	path := filepath.Join(dir, rel)
 	for _, candidate := range []string{path, path + ".hex"} {
 		if _, err := os.Stat(candidate); err == nil {
-			return fileURI(candidate), nil
+			uri := fileURI(candidate)
+			if !strings.HasSuffix(candidate, ".hex") {
+				s.registerPlaintextDocument(uri, d, entry)
+			}
+			return uri, nil
 		} else if !os.IsNotExist(err) {
 			return "", fmt.Errorf("inspect extracted tar entry: %w", err)
 		}
@@ -1330,7 +1382,106 @@ func (s *Server) tarContentDocument(d *document, entry tarEntry) (string, error)
 	if err := os.Chmod(path, 0o400); err != nil {
 		return "", fmt.Errorf("make extracted tar entry read-only: %w", err)
 	}
-	return fileURI(path), nil
+	uri := fileURI(path)
+	if text {
+		s.registerPlaintextDocument(uri, d, entry)
+	}
+	return uri, nil
+}
+
+func (s *Server) registerPlaintextDocument(uri string, source *document, entry tarEntry) {
+	if existing, ok := s.docs[uri]; ok && existing.plain != nil {
+		return
+	}
+	s.docs[uri] = &document{
+		uri: uri, archiveURI: source.archiveURI, meta: source.meta, revision: source.revision,
+		trace: source.trace, plain: &plaintextDocument{entry: entry},
+	}
+}
+
+func (d *document) setPlaintext(text string) {
+	d.plain.text = text
+	d.plain.lineStarts = []int{0}
+	for i, value := range []byte(text) {
+		if value == '\n' {
+			d.plain.lineStarts = append(d.plain.lineStarts, i+1)
+		}
+	}
+}
+
+func (s *Server) plaintextAt(raw json.RawMessage) (*document, deflate.OutRange, bool, error) {
+	var params struct {
+		TextDocument struct {
+			URI string `json:"uri"`
+		} `json:"textDocument"`
+		Position position `json:"position"`
+	}
+	if err := json.Unmarshal(raw, &params); err != nil {
+		return nil, deflate.OutRange{}, false, err
+	}
+	doc, ok := s.docs[params.TextDocument.URI]
+	if !ok || doc.plain == nil || len(doc.plain.lineStarts) == 0 {
+		return nil, deflate.OutRange{}, false, nil
+	}
+	start, end, ok := doc.plain.byteRange(params.Position)
+	if !ok {
+		return doc, deflate.OutRange{}, false, nil
+	}
+	base := doc.plain.entry.Data.Start
+	return doc, deflate.OutRange{Start: base + deflate.OutPos(start), End: base + deflate.OutPos(end)}, true, nil
+}
+
+func (p *plaintextDocument) byteRange(at position) (int, int, bool) {
+	if at.Line < 0 || at.Line >= len(p.lineStarts) {
+		return 0, 0, false
+	}
+	start := p.lineStarts[at.Line]
+	end := len(p.text)
+	if at.Line+1 < len(p.lineStarts) {
+		end = p.lineStarts[at.Line+1]
+	}
+	units := 0
+	offset := start
+	for offset < end && units < at.Character {
+		r, size := utf8.DecodeRuneInString(p.text[offset:end])
+		units += utf16.RuneLen(r)
+		offset += size
+	}
+	if units != at.Character || offset >= len(p.text) {
+		return 0, 0, false
+	}
+	_, size := utf8.DecodeRuneInString(p.text[offset:])
+	return offset, offset + size, true
+}
+
+func (p *plaintextDocument) outputRange(r deflate.OutRange) lspRange {
+	start := int(r.Start - p.entry.Data.Start)
+	end := int(r.End - p.entry.Data.Start)
+	return lspRange{Start: p.positionAt(start), End: p.positionAt(end)}
+}
+
+func (p *plaintextDocument) positionAt(offset int) position {
+	line := sort.Search(len(p.lineStarts), func(i int) bool { return p.lineStarts[i] > offset }) - 1
+	if line < 0 {
+		line = 0
+	}
+	return position{Line: line, Character: len(utf16.Encode([]rune(p.text[p.lineStarts[line]:offset])))}
+}
+
+func (s *Server) plaintextDefinition(op deflate.Op, origin lspRange) (locationLink, bool) {
+	for _, doc := range s.docs {
+		if doc.plain == nil || len(doc.plain.lineStarts) == 0 {
+			continue
+		}
+		start := max(op.Output.Start, doc.plain.entry.Data.Start)
+		end := min(op.Output.End, doc.plain.entry.Data.End)
+		if start >= end {
+			continue
+		}
+		target := doc.plain.outputRange(deflate.OutRange{Start: start, End: end})
+		return locationLink{OriginSelectionRange: origin, TargetURI: doc.uri, TargetRange: target, TargetSelectionRange: target}, true
+	}
+	return locationLink{}, false
 }
 
 func isTextFile(path string) (bool, error) {
@@ -1461,12 +1612,16 @@ func (s *Server) tarImplementations(d *document, entry tarEntry) ([]locationLink
 	if entry.Synthetic {
 		return []locationLink{}, nil
 	}
-	if err := s.ensureTrace(d); err != nil {
-		return nil, fmt.Errorf("load DEFLATE trace: %w", err)
-	}
 	query := entry.Data
 	if query.Start == query.End {
 		query = entry.Header
+	}
+	return s.tarImplementationsRange(d, entry, query)
+}
+
+func (s *Server) tarImplementationsRange(d *document, entry tarEntry, query deflate.OutRange) ([]locationLink, error) {
+	if err := s.ensureTrace(d); err != nil {
+		return nil, fmt.Errorf("load DEFLATE trace: %w", err)
 	}
 	provenanceDoc, err := s.tarProvenanceDocument(d, entry, query)
 	if err != nil {
@@ -1492,7 +1647,11 @@ func (s *Server) tarProvenanceDocument(d *document, entry tarEntry, query deflat
 	if err != nil {
 		return nil, err
 	}
-	path := filepath.Join(root, ".gzpls", "provenance", generatedEntryPath(entry.Name)+".deflate")
+	name := generatedEntryPath(entry.Name)
+	if query.Start != entry.Data.Start || query.End != entry.Data.End {
+		name += fmt.Sprintf("~%d-%d", query.Start, query.End)
+	}
+	path := filepath.Join(root, ".gzpls", "provenance", name+".deflate")
 	uri := fileURI(path)
 	if existing, ok := s.docs[uri]; ok {
 		return existing, nil
