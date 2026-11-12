@@ -61,6 +61,25 @@ func TestParseRawMatchesStandardLibrary(t *testing.T) {
 	}
 }
 
+func TestAppendMatch(t *testing.T) {
+	for distance := 1; distance <= 32; distance++ {
+		prefix := make([]byte, distance)
+		for i := range prefix {
+			prefix[i] = byte(i + 1)
+		}
+		for length := 1; length <= 258; length++ {
+			want := append([]byte(nil), prefix...)
+			for i := 0; i < length; i++ {
+				want = append(want, want[len(want)-distance])
+			}
+			got := appendMatch(append([]byte(nil), prefix...), distance, length)
+			if !bytes.Equal(got, want) {
+				t.Fatalf("distance %d length %d: got %x, want %x", distance, length, got, want)
+			}
+		}
+	}
+}
+
 func TestOverlappingMatchProvenance(t *testing.T) {
 	input := bytes.Repeat([]byte("abc"), 400)
 	trace, err := ParseRaw(rawDeflate(t, input, flate.BestCompression))

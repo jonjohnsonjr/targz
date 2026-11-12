@@ -9,6 +9,7 @@ package deflate
 import (
 	"fmt"
 	"strings"
+	"sync"
 )
 
 // BitPos is an absolute bit offset in the compressed source. DEFLATE consumes
@@ -224,6 +225,7 @@ type Trace struct {
 	consumed BitPos
 	uses     []useIndexEntry
 	useMax   []OutPos
+	usesOnce sync.Once
 }
 
 // ConsumedBits reports the logical end of the parsed raw DEFLATE stream. For

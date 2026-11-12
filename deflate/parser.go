@@ -71,7 +71,6 @@ func ParseRaw(data []byte) (*Trace, error) {
 		return nil, err
 	}
 	t.consumed = r.position()
-	t.buildIndexes()
 	return t, nil
 }
 
@@ -231,10 +230,7 @@ func (p *parser) compressedBlock(block *Block, lit, dist *decoderTable, historyB
 			if distanceValue > 32768 || uint64(distanceValue) > available {
 				return p.fail(distanceBits.Start, "distance %d exceeds %d bytes of history", distanceValue, available)
 			}
-			for i := 0; i < length; i++ {
-				source := len(p.trace.Output) - distanceValue
-				p.trace.Output = append(p.trace.Output, p.trace.Output[source])
-			}
+			p.trace.Output = appendMatch(p.trace.Output, distanceValue, length)
 			p.trace.Ops = append(p.trace.Ops, Op{
 				ID:                len(p.trace.Ops),
 				BlockID:           block.ID,
@@ -252,6 +248,19 @@ func (p *parser) compressedBlock(block *Block, lit, dist *decoderTable, historyB
 			})
 		}
 	}
+}
+
+// appendMatch expands a possibly overlapping LZ77 copy. After copying the
+// initial seed, each copy doubles the initialized prefix, replacing the hot
+// byte-at-a-time append loop without changing overlap semantics.
+func appendMatch(output []byte, distance, length int) []byte {
+	start := len(output)
+	output = append(output, make([]byte, length)...)
+	copied := copy(output[start:], output[start-distance:start])
+	for copied < length {
+		copied += copy(output[start+copied:], output[start:start+copied])
+	}
+	return output
 }
 
 func (p *parser) dynamicTables() (lit, dist, code *decoderTable, header *DynamicHeader, err error) {

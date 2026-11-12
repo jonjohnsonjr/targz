@@ -228,6 +228,7 @@ func (t *Trace) buildIndexes() {
 // range. Results describe normalized seed dependencies rather than expanding
 // overlapping copies into one edge per output byte.
 func (t *Trace) Uses(query OutRange) []Use {
+	t.usesOnce.Do(t.buildIndexes)
 	var uses []Use
 	if query.End <= query.Start {
 		return uses

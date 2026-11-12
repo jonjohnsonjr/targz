@@ -6,7 +6,10 @@ const maxCodeBits = 15
 
 type decoderTable struct {
 	public HuffmanTable
-	byLen  [maxCodeBits + 1]map[uint16]int
+	count  [maxCodeBits + 1]int
+	first  [maxCodeBits + 1]uint16
+	index  [maxCodeBits + 1]int
+	symbol []int
 	max    int
 }
 
@@ -51,17 +54,20 @@ func buildTable(lengths []uint8) (*decoderTable, error) {
 		next[bits] = code
 	}
 
-	t := &decoderTable{}
+	t := &decoderTable{count: count, symbol: make([]int, symbols)}
+	offset := 0
+	for bits := 1; bits <= maxCodeBits; bits++ {
+		t.first[bits] = next[bits]
+		t.index[bits] = offset
+		offset += count[bits]
+	}
 	for symbol, n := range lengths {
 		if n == 0 {
 			continue
 		}
 		c := next[n]
 		next[n]++
-		if t.byLen[n] == nil {
-			t.byLen[n] = make(map[uint16]int)
-		}
-		t.byLen[n][c] = symbol
+		t.symbol[t.index[n]+int(c-t.first[n])] = symbol
 		if int(n) > t.max {
 			t.max = int(n)
 		}
@@ -83,8 +89,9 @@ func (t *decoderTable) decode(r *bitReader) (int, BitRange, error) {
 			return 0, BitRange{Start: start, End: r.position()}, err
 		}
 		code = code<<1 | uint16(bit)
-		if symbol, ok := t.byLen[bits][code]; ok {
-			return symbol, BitRange{Start: start, End: r.position()}, nil
+		offset := int(code) - int(t.first[bits])
+		if offset >= 0 && offset < t.count[bits] {
+			return t.symbol[t.index[bits]+offset], BitRange{Start: start, End: r.position()}, nil
 		}
 	}
 	return 0, BitRange{Start: start, End: r.position()}, &ParseError{

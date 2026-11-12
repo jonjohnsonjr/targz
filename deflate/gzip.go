@@ -19,7 +19,23 @@ const (
 // member's CRC32 and uncompressed size.
 func ParseGzip(data []byte) (*Trace, error) {
 	r := newBitReader(data)
-	t := &Trace{input: append([]byte(nil), data...)}
+	// Most gzip streams contain one member, so the trailing ISIZE is a useful
+	// allocation hint. Keep the hint bounded: malformed input must not be able
+	// to force an arbitrary allocation before its trailer has been validated.
+	outputCap := 0
+	if len(data) >= 8 {
+		outputCap = int(binary.LittleEndian.Uint32(data[len(data)-4:]))
+		outputCap = min(outputCap, 256<<20)
+	}
+	// An output-producing instruction generally consumes at least one byte of
+	// compressed input. Cap the hint so a very large input does not require its
+	// entire operation stream to be resident before parsing begins.
+	opCap := min(len(data), 1<<20)
+	t := &Trace{
+		input:  append([]byte(nil), data...),
+		Output: make([]byte, 0, outputCap),
+		Ops:    make([]Op, 0, opCap),
+	}
 	p := parser{r: r, trace: t}
 
 	for r.remaining() != 0 {
@@ -107,7 +123,6 @@ func ParseGzip(data []byte) (*Trace, error) {
 	}
 
 	t.consumed = r.position()
-	t.buildIndexes()
 	return t, nil
 }
 
