@@ -2,9 +2,13 @@ package lsp
 
 import (
 	"archive/tar"
+	"bufio"
 	"bytes"
+	"compress/flate"
+	"compress/gzip"
 	"fmt"
 	"io"
+	"os"
 	"path"
 	"sort"
 	"strings"
@@ -34,12 +38,17 @@ type tarEntry struct {
 }
 
 type tarCountReader struct {
-	r io.Reader
-	n int64
+	r      io.Reader
+	n      int64
+	prefix []byte
 }
 
 func (r *tarCountReader) Read(p []byte) (int, error) {
 	n, err := r.r.Read(p)
+	if len(r.prefix) < 1024 {
+		keep := min(n, 1024-len(r.prefix))
+		r.prefix = append(r.prefix, p[:keep]...)
+	}
 	r.n += int64(n)
 	return n, err
 }
@@ -49,6 +58,85 @@ func (r *tarCountReader) Read(p []byte) (int, error) {
 // padding, leaving the count at the exact start of the next entry's data.
 func parseTarView(output []byte) ([]tarEntry, bool) {
 	cr := &tarCountReader{r: bytes.NewReader(output)}
+	entries, err := scanTarReader(cr)
+	if err != nil {
+		return nil, false
+	}
+	return entries, tarScanValid(cr, entries)
+}
+
+func scanTarFile(source string, raw bool) ([]tarEntry, bool, error) {
+	f, err := os.Open(source)
+	if err != nil {
+		return nil, false, err
+	}
+	defer f.Close()
+
+	input := bufio.NewReader(f)
+	magic, _ := input.Peek(2)
+	var decoded io.ReadCloser
+	if !raw && len(magic) == 2 && magic[0] == 0x1f && magic[1] == 0x8b {
+		decoded, err = gzip.NewReader(input)
+	} else {
+		decoded = flate.NewReader(input)
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	defer decoded.Close()
+
+	cr := &tarCountReader{r: decoded}
+	entries, scanErr := scanTarReader(cr)
+	if scanErr != nil {
+		return nil, false, nil
+	}
+	if _, err := io.Copy(io.Discard, cr); err != nil {
+		return nil, false, err
+	}
+	return entries, tarScanValid(cr, entries), nil
+}
+
+func copyTarEntry(source string, raw bool, index int, dst io.Writer) error {
+	f, err := os.Open(source)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	input := bufio.NewReader(f)
+	magic, _ := input.Peek(2)
+	var decoded io.ReadCloser
+	if !raw && len(magic) == 2 && magic[0] == 0x1f && magic[1] == 0x8b {
+		decoded, err = gzip.NewReader(input)
+	} else {
+		decoded = flate.NewReader(input)
+	}
+	if err != nil {
+		return err
+	}
+	defer decoded.Close()
+	tr := tar.NewReader(decoded)
+	for current := 0; ; current++ {
+		hdr, err := tr.Next()
+		if err != nil {
+			if err == io.EOF {
+				return fmt.Errorf("tar entry %d does not exist", index)
+			}
+			return err
+		}
+		if current == index {
+			n, err := io.Copy(dst, io.LimitReader(tr, hdr.Size))
+			if err != nil {
+				return err
+			}
+			if n != hdr.Size {
+				return io.ErrUnexpectedEOF
+			}
+			return nil
+		}
+	}
+}
+
+func scanTarReader(cr *tarCountReader) ([]tarEntry, error) {
 	tr := tar.NewReader(cr)
 	var entries []tarEntry
 	for {
@@ -57,7 +145,7 @@ func parseTarView(output []byte) ([]tarEntry, bool) {
 			break
 		}
 		if err != nil {
-			return nil, false
+			return nil, err
 		}
 		dataStart := cr.n
 		headerStart := dataStart - 512
@@ -82,12 +170,16 @@ func parseTarView(output []byte) ([]tarEntry, bool) {
 			SymbolKind: symbolKind,
 		})
 	}
+	return entries, nil
+}
+
+func tarScanValid(cr *tarCountReader, entries []tarEntry) bool {
 	if len(entries) != 0 {
-		return entries, true
+		return true
 	}
 	// archive/tar reports EOF for both an empty input and the two zero blocks
 	// which constitute an empty archive. Require the actual end marker here.
-	return entries, len(output) >= 1024 && bytes.Equal(output[:1024], make([]byte, 1024))
+	return len(cr.prefix) >= 1024 && bytes.Equal(cr.prefix[:1024], make([]byte, 1024))
 }
 
 func tarKind(flag byte) (string, int) {
@@ -208,7 +300,7 @@ func tarTreePrefix(ancestorLast []bool, last bool) string {
 	return b.String()
 }
 
-func renderTarView(meta []byte, trace *deflate.Trace, entries []tarEntry) []byte {
+func renderTarView(meta []byte, entries []tarEntry) []byte {
 	var out bytes.Buffer
 	var payload int64
 	for _, entry := range entries {

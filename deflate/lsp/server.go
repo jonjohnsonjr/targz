@@ -986,9 +986,11 @@ func (d *document) tarHover(entry tarEntry) string {
 	if query.Start == query.End {
 		query = entry.Header
 	}
-	producers := d.trace.Producers(query)
-	if len(producers) != 0 {
-		fmt.Fprintf(&b, "  \nDEFLATE provenance: `%d` producing operations (first is %%%d)", len(producers), producers[0].Op.ID)
+	if d.trace != nil {
+		producers := d.trace.Producers(query)
+		if len(producers) != 0 {
+			fmt.Fprintf(&b, "  \nDEFLATE provenance: `%d` producing operations (first is %%%d)", len(producers), producers[0].Op.ID)
+		}
 	}
 	return b.String()
 }
@@ -1175,11 +1177,6 @@ func (s *Server) tarContentDocument(d *document, entry tarEntry) (string, error)
 	if err != nil {
 		return "", err
 	}
-	start, end := int(entry.Data.Start), int(entry.Data.End)
-	if start < 0 || end < start || end > len(d.trace.Output) {
-		return "", fmt.Errorf("tar payload %s has invalid range [%d:%d)", entry.Name, start, end)
-	}
-	data := d.trace.Output[start:end]
 	rel := generatedEntryPath(entry.Name)
 	for _, candidate := range d.tar {
 		if !candidate.Synthetic && candidate.Index < entry.Index && normalizedTarPath(candidate.Name) == normalizedTarPath(entry.Name) {
@@ -1188,25 +1185,98 @@ func (s *Server) tarContentDocument(d *document, entry tarEntry) (string, error)
 		}
 	}
 	path := filepath.Join(dir, rel)
-	if !isTextPayload(data) {
-		path += ".hex"
-		data = renderHexPayload(data)
-	}
-	if _, err := os.Stat(path); err == nil {
-		return fileURI(path), nil
-	} else if !os.IsNotExist(err) {
-		return "", fmt.Errorf("inspect extracted tar entry: %w", err)
+	for _, candidate := range []string{path, path + ".hex"} {
+		if _, err := os.Stat(candidate); err == nil {
+			return fileURI(candidate), nil
+		} else if !os.IsNotExist(err) {
+			return "", fmt.Errorf("inspect extracted tar entry: %w", err)
+		}
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return "", fmt.Errorf("create extracted tar entry directory: %w", err)
 	}
-	if err := os.WriteFile(path, data, 0o600); err != nil {
-		return "", fmt.Errorf("write extracted tar entry: %w", err)
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".gzpls-entry-*")
+	if err != nil {
+		return "", fmt.Errorf("create extracted tar entry: %w", err)
+	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
+	if err := copyTarEntry(d.meta.Source, d.meta.Raw, entry.Index, tmp); err != nil {
+		tmp.Close()
+		return "", fmt.Errorf("extract tar entry %s: %w", entry.Name, err)
+	}
+	if err := tmp.Close(); err != nil {
+		return "", fmt.Errorf("close extracted tar entry: %w", err)
+	}
+	text, err := isTextFile(tmpPath)
+	if err != nil {
+		return "", fmt.Errorf("classify extracted tar entry: %w", err)
+	}
+	if text {
+		if err := os.Rename(tmpPath, path); err != nil {
+			return "", fmt.Errorf("publish extracted tar entry: %w", err)
+		}
+	} else {
+		path += ".hex"
+		if err := renderHexFile(tmpPath, path); err != nil {
+			return "", fmt.Errorf("render extracted tar entry: %w", err)
+		}
 	}
 	if err := os.Chmod(path, 0o400); err != nil {
 		return "", fmt.Errorf("make extracted tar entry read-only: %w", err)
 	}
 	return fileURI(path), nil
+}
+
+func isTextFile(path string) (bool, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return false, err
+	}
+	defer f.Close()
+	r := bufio.NewReader(f)
+	for {
+		value, size, err := r.ReadRune()
+		if err == io.EOF {
+			return true, nil
+		}
+		if err != nil {
+			return false, err
+		}
+		if value == utf8.RuneError && size == 1 {
+			return false, nil
+		}
+		if value != '\n' && value != '\r' && value != '\t' && !unicode.IsPrint(value) {
+			return false, nil
+		}
+	}
+}
+
+func renderHexFile(source, target string) error {
+	in, err := os.Open(source)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	out, err := os.OpenFile(target, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if err != nil {
+		return err
+	}
+	ok := false
+	defer func() {
+		out.Close()
+		if !ok {
+			os.Remove(target)
+		}
+	}()
+	if err := renderHex(out, in); err != nil {
+		return err
+	}
+	if err := out.Close(); err != nil {
+		return err
+	}
+	ok = true
+	return nil
 }
 
 func generatedEntryPath(name string) string {
@@ -1230,33 +1300,64 @@ func isTextPayload(data []byte) bool {
 }
 
 func renderHexPayload(data []byte) []byte {
-	var out strings.Builder
-	for offset := 0; offset < len(data); offset += 16 {
-		end := min(offset+16, len(data))
-		fmt.Fprintf(&out, "%08x: ", offset)
-		for i := offset; i < offset+16; i++ {
-			if i < end {
-				fmt.Fprintf(&out, "%02x ", data[i])
+	var out bytes.Buffer
+	_ = renderHex(&out, bytes.NewReader(data))
+	return out.Bytes()
+}
+
+func renderHex(out io.Writer, in io.Reader) error {
+	buf := make([]byte, 16)
+	for offset := 0; ; offset += 16 {
+		n, err := io.ReadFull(in, buf)
+		if err == io.EOF {
+			return nil
+		}
+		if err != nil && err != io.ErrUnexpectedEOF {
+			return err
+		}
+		if _, writeErr := fmt.Fprintf(out, "%08x: ", offset); writeErr != nil {
+			return writeErr
+		}
+		for i := 0; i < 16; i++ {
+			if i < n {
+				if _, writeErr := fmt.Fprintf(out, "%02x ", buf[i]); writeErr != nil {
+					return writeErr
+				}
 			} else {
-				out.WriteString("   ")
+				if _, writeErr := io.WriteString(out, "   "); writeErr != nil {
+					return writeErr
+				}
 			}
 		}
-		out.WriteString(" |")
-		for _, value := range data[offset:end] {
+		if _, writeErr := io.WriteString(out, " |"); writeErr != nil {
+			return writeErr
+		}
+		for _, value := range buf[:n] {
 			if value >= 0x20 && value <= 0x7e {
-				out.WriteByte(value)
+				if _, writeErr := out.Write([]byte{value}); writeErr != nil {
+					return writeErr
+				}
 			} else {
-				out.WriteByte('.')
+				if _, writeErr := io.WriteString(out, "."); writeErr != nil {
+					return writeErr
+				}
 			}
 		}
-		out.WriteString("|\n")
+		if _, writeErr := io.WriteString(out, "|\n"); writeErr != nil {
+			return writeErr
+		}
+		if err == io.ErrUnexpectedEOF {
+			return nil
+		}
 	}
-	return []byte(out.String())
 }
 
 func (s *Server) tarImplementations(d *document, entry tarEntry) ([]locationLink, error) {
 	if entry.Synthetic {
 		return []locationLink{}, nil
+	}
+	if err := ensureTrace(d); err != nil {
+		return nil, fmt.Errorf("load DEFLATE trace: %w", err)
 	}
 	query := entry.Data
 	if query.Start == query.End {

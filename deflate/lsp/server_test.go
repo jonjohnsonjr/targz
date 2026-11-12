@@ -801,6 +801,9 @@ func TestAutoViewDetectsTarAndExposesEntries(t *testing.T) {
 	if doc.loadErr != nil {
 		t.Fatal(doc.loadErr)
 	}
+	if doc.trace != nil {
+		t.Fatal("opening a tar catalog eagerly loaded the DEFLATE trace")
+	}
 	var entry, linkEntry tarEntry
 	for _, candidate := range doc.tar {
 		if candidate.Name == "docs/readme.txt" && !candidate.Synthetic {
@@ -829,7 +832,7 @@ func TestAutoViewDetectsTarAndExposesEntries(t *testing.T) {
 		t.Fatal(err)
 	}
 	hover := result.(map[string]any)["contents"].(map[string]any)["value"].(string)
-	if !strings.Contains(hover, "tar file") || !strings.Contains(hover, "DEFLATE provenance") {
+	if !strings.Contains(hover, "tar file") || strings.Contains(hover, "DEFLATE provenance") {
 		t.Fatalf("tar hover = %q", hover)
 	}
 
@@ -858,6 +861,9 @@ func TestAutoViewDetectsTarAndExposesEntries(t *testing.T) {
 	}
 	if info.Mode().Perm()&0o222 != 0 {
 		t.Fatalf("extracted tar definition mode = %v; want read-only", info.Mode())
+	}
+	if doc.trace != nil {
+		t.Fatal("extracting one tar member eagerly loaded the DEFLATE trace")
 	}
 	linkDefinition := definitionLinksAtCharacter(t, s, uri, linkEntry.LinkToken.Start.Line, linkEntry.LinkToken.Start.Character)
 	if len(linkDefinition) != 1 || linkDefinition[0].TargetURI != uri || linkDefinition[0].TargetSelectionRange != entry.NameToken {
@@ -900,6 +906,9 @@ func TestAutoViewDetectsTarAndExposesEntries(t *testing.T) {
 	implementations := result.([]locationLink)
 	if len(implementations) != 1 || !strings.Contains(implementations[0].TargetURI, "/.gzpls/provenance/") {
 		t.Fatalf("tar implementations = %#v, want one summarized provenance document", implementations)
+	}
+	if doc.trace == nil {
+		t.Fatal("provenance navigation did not load the DEFLATE trace on demand")
 	}
 	provenanceDoc := s.docs[implementations[0].TargetURI]
 	if provenanceDoc == nil || provenanceDoc.meta.View != "provenance" || len(provenanceDoc.provenance) == 0 {

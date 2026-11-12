@@ -6,8 +6,10 @@ import (
 	"bufio"
 	"bytes"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -87,6 +89,22 @@ func DisassembleFileView(source string, raw bool, view string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	if view == "auto" || view == "tar" {
+		entries, isTar, err := scanTarFile(abs, raw)
+		if err != nil {
+			return nil, err
+		}
+		if isTar {
+			meta, err := json.Marshal(metadata{Source: abs, Raw: raw, View: "tar", RFC: locateRFC1951(abs)})
+			if err != nil {
+				return nil, err
+			}
+			return renderTarView(meta, entries), nil
+		}
+		if view == "tar" {
+			return nil, fmt.Errorf("decoded output is not a tar archive")
+		}
+	}
 	data, err := os.ReadFile(abs)
 	if err != nil {
 		return nil, err
@@ -125,7 +143,7 @@ func disassembleView(source string, raw bool, trace *deflate.Trace, requested st
 		return nil, err
 	}
 	if view == "tar" {
-		return renderTarView(meta, trace, entries), nil
+		return renderTarView(meta, entries), nil
 	}
 	var out bytes.Buffer
 	out.WriteString("# DEFLATE trace · gd: value → code → header → RFC 1951\n")
@@ -233,6 +251,13 @@ func openDerivedDocument(uri, text string, source *document) *document {
 	if source != nil {
 		doc.revision = source.revision
 		doc.trace = source.trace
+	} else if doc.meta.View == "tar" {
+		var err error
+		doc.revision, err = quickFileRevision(doc.meta.Source)
+		if err != nil {
+			doc.loadErr = err
+			return doc
+		}
 	} else {
 		data, err := os.ReadFile(doc.meta.Source)
 		if err != nil {
@@ -289,7 +314,11 @@ func openDerivedDocument(uri, text string, source *document) *document {
 		}
 	}
 	if doc.loadErr == nil && doc.meta.View == "tar" {
-		entries, ok := parseTarView(doc.trace.Output)
+		entries, ok, err := scanTarFile(doc.meta.Source, doc.meta.Raw)
+		if err != nil {
+			doc.loadErr = err
+			return doc
+		}
 		if !ok {
 			doc.loadErr = fmt.Errorf("document requests tar view but decoded output is not tar")
 			return doc
@@ -316,6 +345,40 @@ func openDerivedDocument(uri, text string, source *document) *document {
 		}
 	}
 	return doc
+}
+
+func quickFileRevision(path string) ([sha256.Size]byte, error) {
+	var revision [sha256.Size]byte
+	f, err := os.Open(path)
+	if err != nil {
+		return revision, err
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		return revision, err
+	}
+	h := sha256.New()
+	var identity [16]byte
+	binary.LittleEndian.PutUint64(identity[:8], uint64(info.Size()))
+	binary.LittleEndian.PutUint64(identity[8:], uint64(info.ModTime().UnixNano()))
+	_, _ = h.Write(identity[:])
+	const sample = 64 << 10
+	buf := make([]byte, sample)
+	n, err := f.ReadAt(buf, 0)
+	if err != nil && err != io.EOF {
+		return revision, err
+	}
+	_, _ = h.Write(buf[:n])
+	if info.Size() > sample {
+		n, err = f.ReadAt(buf, max(0, info.Size()-sample))
+		if err != nil && err != io.EOF {
+			return revision, err
+		}
+		_, _ = h.Write(buf[:n])
+	}
+	copy(revision[:], h.Sum(nil))
+	return revision, nil
 }
 
 func encodingTokenRanges(text string, line int) encodingTokens {
@@ -470,6 +533,18 @@ func parse(data []byte, raw bool) (*deflate.Trace, error) {
 		return deflate.ParseGzip(data)
 	}
 	return deflate.ParseRaw(data)
+}
+
+func ensureTrace(doc *document) error {
+	if doc.trace != nil {
+		return nil
+	}
+	data, err := os.ReadFile(doc.meta.Source)
+	if err != nil {
+		return err
+	}
+	doc.trace, err = parse(data, doc.meta.Raw)
+	return err
 }
 
 func quoteByte(b byte) string {
