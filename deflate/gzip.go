@@ -25,7 +25,11 @@ func ParseGzip(data []byte) (*Trace, error) {
 	outputCap := 0
 	if len(data) >= 8 {
 		outputCap = int(binary.LittleEndian.Uint32(data[len(data)-4:]))
-		outputCap = min(outputCap, 256<<20)
+		// Also relate the speculative allocation to bytes actually supplied.
+		// Highly compressible valid streams can grow beyond this and will use
+		// ordinary slice growth; a tiny bogus trailer cannot allocate 256 MiB.
+		hintCap := max(1<<20, len(data)*64)
+		outputCap = min(outputCap, min(hintCap, 256<<20))
 	}
 	// An output-producing instruction generally consumes at least one byte of
 	// compressed input. Cap the hint so a very large input does not require its
