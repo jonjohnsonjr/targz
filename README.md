@@ -66,6 +66,11 @@ their immediate children; files open their decoded contents. `gri` crosses into
 the DEFLATE operations which physically produce the selected entry, and `grr`
 finds links or copies which refer to it.
 
+The default `auto` view is content-first. Tar payloads open as directories,
+ordinary non-tar gzip payloads open as decoded text with the underlying
+filetype, and binary payloads open as compact hex dumps. Use `disassemble -view
+trace` when the DEFLATE instruction stream itself should be the starting view.
+
 For clients other than Neovim, first produce the textual document the server
 operates on:
 

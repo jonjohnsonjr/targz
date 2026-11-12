@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -90,8 +91,9 @@ func DisassembleFile(source string, raw bool) ([]byte, error) {
 	return DisassembleFileView(source, raw, "auto")
 }
 
-// DisassembleFileView renders auto, trace, or tar. Auto selects tar only when
-// the complete decoded output passes archive/tar checksum validation.
+// DisassembleFileView renders auto, trace, or tar. Auto presents decoded
+// content: tar archives as directories, text verbatim, and other payloads as a
+// compact hex dump. Trace remains an explicit debugger view.
 func DisassembleFileView(source string, raw bool, view string) ([]byte, error) {
 	abs, err := filepath.Abs(source)
 	if err != nil {
@@ -124,9 +126,11 @@ func DisassembleFileView(source string, raw bool, view string) ([]byte, error) {
 	return disassembleView(abs, raw, trace, view)
 }
 
-// Disassemble renders trace as a gzpls source document.
+// Disassemble renders a trace as a gzpls source document. Content-first
+// selection belongs to the file-level entry point, where the editor is opening
+// the compressed payload rather than an already parsed debugger trace.
 func Disassemble(source string, raw bool, trace *deflate.Trace) ([]byte, error) {
-	return disassembleView(source, raw, trace, "auto")
+	return disassembleView(source, raw, trace, "trace")
 }
 
 func disassembleView(source string, raw bool, trace *deflate.Trace, requested string) ([]byte, error) {
@@ -135,8 +139,10 @@ func disassembleView(source string, raw bool, trace *deflate.Trace, requested st
 	if view == "auto" {
 		if isTar {
 			view = "tar"
+		} else if isTextPayload(trace.Output) {
+			return append([]byte(nil), trace.Output...), nil
 		} else {
-			view = "trace"
+			return renderHexPayload(trace.Output), nil
 		}
 	}
 	if view != "trace" && view != "tar" {
@@ -189,7 +195,59 @@ func disassembleView(source string, raw bool, trace *deflate.Trace, requested st
 }
 
 func openDocument(uri, text string) *document {
-	return openDerivedDocument(uri, text, nil)
+	doc := openDerivedDocument(uri, text, nil)
+	if doc.loadErr == nil {
+		return doc
+	}
+	if content := openCompressedContentDocument(uri, text); content != nil {
+		return content
+	}
+	return doc
+}
+
+// openCompressedContentDocument reconstructs the invisible metadata for an
+// auto-view buffer. The editor sees only the natural decoded text or hex dump;
+// the compressed file URI is sufficient for the server to recover provenance.
+func openCompressedContentDocument(uri, text string) *document {
+	parsed, err := url.Parse(uri)
+	if err != nil || parsed.Scheme != "file" {
+		return nil
+	}
+	source := filepath.FromSlash(parsed.Path)
+	data, err := os.ReadFile(source)
+	if err != nil {
+		return nil
+	}
+	trace, err := parse(data, false)
+	if err != nil {
+		return nil
+	}
+	view := "content"
+	if string(trace.Output) != text {
+		if string(renderHexPayload(trace.Output)) != text {
+			return nil
+		}
+		view = "hex"
+	}
+	doc := &document{
+		uri: uri, archiveURI: uri,
+		meta:  metadata{Source: source, View: view, RFC: locateRFC1951(source)},
+		trace: trace, revision: sha256.Sum256(data),
+		lineOp: make(map[int]int), opLine: make(map[int]int), lineLen: make(map[int]int),
+		tokens: make(map[int]opTokens), tar: make(map[int]tarEntry), encoding: make(map[string]encodingNode),
+		encodingLine: make(map[int]string), encodingTok: make(map[string]encodingTokens),
+		literalDefs: make(map[int]string), lengthDefs: make(map[int]string), distanceDefs: make(map[int]string),
+		provenance: make(map[int][]int),
+	}
+	if view == "content" {
+		name := strings.TrimSuffix(filepath.Base(source), filepath.Ext(source))
+		doc.plain = &plaintextDocument{entry: tarEntry{
+			Name: name, Kind: "file", Size: int64(len(trace.Output)),
+			Data: deflate.OutRange{End: deflate.OutPos(len(trace.Output))},
+		}}
+		doc.setPlaintext(text)
+	}
+	return doc
 }
 
 func openDerivedDocument(uri, text string, source *document) *document {

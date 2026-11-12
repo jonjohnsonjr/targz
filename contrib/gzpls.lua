@@ -71,7 +71,14 @@ function M.setup(opts)
 
       vim.bo[event.buf].modifiable = true
       vim.api.nvim_buf_set_lines(event.buf, 0, -1, false, split_lines(result.stdout))
-      vim.bo[event.buf].filetype = "gzpls"
+      if result.stdout:find("# gzpls ", 1, true) then
+        vim.bo[event.buf].filetype = "gzpls"
+      elseif result.stdout:match("^%x%x%x%x%x%x%x%x: ") then
+        vim.bo[event.buf].filetype = "xxd"
+      else
+        local decoded_name = path:gsub("%.gz$", "")
+        vim.bo[event.buf].filetype = vim.filetype.match({ filename = decoded_name, buf = event.buf }) or ""
+      end
       vim.bo[event.buf].modified = false
       vim.bo[event.buf].readonly = true
       attach(event.buf)

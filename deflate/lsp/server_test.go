@@ -985,6 +985,89 @@ func TestAutoViewDetectsTarAndExposesEntries(t *testing.T) {
 	}
 }
 
+func TestAutoViewShowsNonTarContent(t *testing.T) {
+	writeGzip := func(path string, payload []byte) {
+		t.Helper()
+		var compressed bytes.Buffer
+		zw := gzip.NewWriter(&compressed)
+		if _, err := zw.Write(payload); err != nil {
+			t.Fatal(err)
+		}
+		if err := zw.Close(); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, compressed.Bytes(), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	text := []byte("hello from an ordinary gzip\n# gzpls is ordinary content here\nsecond line\n")
+	source := filepath.Join(t.TempDir(), "hello.txt.gz")
+	writeGzip(source, text)
+	listing, err := DisassembleFileView(source, false, "auto")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(listing, text) {
+		t.Fatalf("auto text view = %q, want decoded payload", listing)
+	}
+
+	uri := fileURI(source)
+	doc := openDocument(uri, string(listing))
+	if doc.loadErr != nil {
+		t.Fatal(doc.loadErr)
+	}
+	if doc.plain == nil || doc.meta.View != "content" || doc.plain.entry.Data.End != deflate.OutPos(len(text)) {
+		t.Fatalf("content document = %#v", doc)
+	}
+	s := NewServer(bytes.NewReader(nil), &bytes.Buffer{})
+	s.docs[uri] = doc
+	params, _ := json.Marshal(map[string]any{
+		"textDocument": map[string]any{"uri": uri},
+		"position":     map[string]any{"line": 0, "character": 1},
+	})
+	result, err := s.handle("textDocument/implementation", params)
+	if err != nil {
+		t.Fatal(err)
+	}
+	links := result.([]locationLink)
+	if len(links) != 1 || !strings.Contains(links[0].TargetURI, "hello.txt~1-2.deflate") {
+		t.Fatalf("plaintext implementation = %#v", links)
+	}
+	provenance := s.docs[links[0].TargetURI]
+	toTrace := definitionLinksAtCharacter(t, s, provenance.uri, links[0].TargetSelectionRange.Start.Line, 0)
+	if len(toTrace) == 0 {
+		t.Fatal("root plaintext provenance did not drill into the trace")
+	}
+	backToPlain := definitionLinksAtCharacter(t, s, toTrace[0].TargetURI, toTrace[0].TargetSelectionRange.Start.Line, toTrace[0].TargetSelectionRange.Start.Character)
+	if len(backToPlain) != 1 || backToPlain[0].TargetURI != uri {
+		t.Fatalf("root trace output definition = %#v, want plaintext", backToPlain)
+	}
+
+	trace, err := DisassembleFileView(source, false, "trace")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(trace, []byte("block 0 bits[")) {
+		t.Fatalf("forced trace view:\n%s", trace)
+	}
+
+	binary := []byte{0, 1, 'A', 0xff}
+	binarySource := filepath.Join(t.TempDir(), "data.bin.gz")
+	writeGzip(binarySource, binary)
+	hex, err := DisassembleFileView(binarySource, false, "auto")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := renderHexPayload(binary); !bytes.Equal(hex, want) {
+		t.Fatalf("auto binary view = %q, want %q", hex, want)
+	}
+	hexDoc := openDocument(fileURI(binarySource), string(hex))
+	if hexDoc.loadErr != nil || hexDoc.meta.View != "hex" || hexDoc.plain != nil {
+		t.Fatalf("hex document = %#v", hexDoc)
+	}
+}
+
 func TestRenderHexPayload(t *testing.T) {
 	got := string(renderHexPayload([]byte{0, 1, 'A', 0xff}))
 	want := "00000000: 00 01 41 ff                                      |..A.|\n"
@@ -1006,7 +1089,7 @@ func TestCallHierarchyFollowsDeflateDependencies(t *testing.T) {
 	if err := os.WriteFile(source, compressed.Bytes(), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	listing, err := DisassembleFile(source, false)
+	listing, err := DisassembleFileView(source, false, "trace")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1167,7 +1250,7 @@ func TestRenamePreparesLiteralReportsImpactAndRewritesArchive(t *testing.T) {
 	if err := os.WriteFile(source, compressed.Bytes(), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	listing, err := DisassembleFile(source, false)
+	listing, err := DisassembleFileView(source, false, "trace")
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -3,6 +3,7 @@ package lsp
 import (
 	"bytes"
 	"compress/flate"
+	"compress/gzip"
 	"fmt"
 	"os"
 	"os/exec"
@@ -150,6 +151,18 @@ func TestNeovimTarDirectoryNavigation(t *testing.T) {
 		t.Fatal(err)
 	}
 	source := filepath.Join(repo, "tarfs", "testdata", "gsip.tar.gz")
+	plainSource := filepath.Join(temp, "hello.txt.gz")
+	var compressed bytes.Buffer
+	zw := gzip.NewWriter(&compressed)
+	if _, err := zw.Write([]byte("hello from an ordinary gzip\nsecond line\n")); err != nil {
+		t.Fatal(err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(plainSource, compressed.Bytes(), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	integration := filepath.Join(repo, "contrib", "gzpls.lua")
 	server := filepath.Join(temp, "gzpls")
 	build := exec.Command("go", "build", "-o", server, "./cmd/gzpls")
@@ -161,6 +174,7 @@ func TestNeovimTarDirectoryNavigation(t *testing.T) {
 	marker := filepath.Join(temp, "result")
 	lua := fmt.Sprintf(`
 local source = %s
+local plain_source = %s
 local server = %s
 local repo = %s
 local marker = %s
@@ -182,12 +196,23 @@ assert(vim.wait(5000, function()
   return #vim.lsp.get_clients({name = "gzpls", bufnr = 0}) == 1
 end), "gzpls did not attach to generated directory")
 assert(vim.fn.search("gsip.go", "nw") > 0, "generated directory has no gsip.go entry")
+vim.cmd("edit " .. vim.fn.fnameescape(plain_source))
+assert(vim.wait(5000, function()
+  return #vim.lsp.get_clients({name = "gzpls", bufnr = 0}) == 1
+end), "gzpls did not attach to ordinary gzip")
+assert(vim.api.nvim_buf_get_lines(0, 0, 2, false)[1] == "hello from an ordinary gzip", "ordinary gzip did not open as plaintext")
+vim.api.nvim_win_set_cursor(0, {1, 1})
+assert(vim.fn.maparg("gri", "n") ~= "", "gzpls did not install gri mapping")
+vim.cmd("normal gri")
+assert(vim.wait(5000, function()
+  return string.match(vim.api.nvim_buf_get_name(0), "/%%.gzpls/provenance/hello%%.txt~1%%-2%%.deflate$") ~= nil
+end), "implementation did not enter plaintext provenance: " .. vim.api.nvim_buf_get_name(0))
 vim.fn.writefile({"ok"}, marker)
 for _, client in ipairs(vim.lsp.get_clients({name = "gzpls"})) do
   client:stop(true)
 end
 vim.cmd("qa!")
-`, strconv.Quote(source), strconv.Quote(server), strconv.Quote(repo), strconv.Quote(marker), strconv.Quote(integration))
+`, strconv.Quote(source), strconv.Quote(plainSource), strconv.Quote(server), strconv.Quote(repo), strconv.Quote(marker), strconv.Quote(integration))
 	script := filepath.Join(temp, "tar.lua")
 	if err := os.WriteFile(script, []byte(lua), 0o600); err != nil {
 		t.Fatal(err)

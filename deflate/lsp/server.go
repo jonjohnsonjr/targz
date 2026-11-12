@@ -126,15 +126,14 @@ func (s *Server) handle(method string, raw json.RawMessage) (any, error) {
 		if len(params.ContentChanges) != 0 {
 			text = params.ContentChanges[len(params.ContentChanges)-1].Text
 		}
-		// Generated documents are registered before the editor follows their
-		// definition link. Preserve the shared trace when the ensuing didOpen
-		// echoes the same file back to us instead of parsing the archive again.
-		if method == "textDocument/didOpen" {
-			if existing, ok := s.docs[params.TextDocument.URI]; ok {
-				if existing.plain != nil {
-					existing.setPlaintext(text)
-					return nil, nil
-				}
+		// Generated and content documents already carry their invisible source
+		// mapping. Preserve it when the editor echoes visible text back to us.
+		if existing, ok := s.docs[params.TextDocument.URI]; ok {
+			if existing.plain != nil {
+				existing.setPlaintext(text)
+				return nil, nil
+			}
+			if method == "textDocument/didOpen" {
 				if existing.trace != nil {
 					return nil, nil
 				}
@@ -377,6 +376,12 @@ func (s *Server) handle(method string, raw json.RawMessage) (any, error) {
 				}
 				return []locationLink{}, nil
 			}
+		}
+		if op.Kind == deflate.StoredOp && containsPosition(doc.tokens[op.ID].Output, at) {
+			if link, ok := s.plaintextDefinition(*op, doc.tokens[op.ID].Output); ok {
+				return []locationLink{link}, nil
+			}
+			return []locationLink{}, nil
 		}
 		seed, ok := op.Seed()
 		if !ok {
