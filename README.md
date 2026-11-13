@@ -171,6 +171,12 @@ returns to the intersecting plaintext range, while `←distance` continues to
 follow the match's copy source. This makes plaintext → implementation → trace →
 definition → plaintext a lossless navigation loop.
 
+Hovering a match makes the compact backreference legible without expanding the
+trace: it shows the copy distance and length, source and destination output
+ranges, and bounded escaped previews of both the initial seed and expanded
+result. Overlapping copies explicitly describe how newly written bytes feed the
+rest of the same match.
+
 If configuring Neovim manually instead, it must attach the already-running
 gzpls client to generated buffers without changing their normal filetype. This
 small autocmd is sufficient:

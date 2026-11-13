@@ -6,6 +6,7 @@ import (
 	"compress/flate"
 	"compress/gzip"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -409,6 +410,54 @@ func TestMatchOperandsHaveIndependentDefinitions(t *testing.T) {
 	lineText := strings.Split(string(listing), "\n")[doc.opLine[matchID]]
 	if strings.HasPrefix(lineText, "%") || !strings.Contains(lineText, "  # ←") {
 		t.Fatalf("match line = %q, want line-number identity and compact backreference comment", lineText)
+	}
+}
+
+func TestMatchHoverPreviewsBackreference(t *testing.T) {
+	input := bytes.Repeat([]byte("abc"), 200)
+	var compressed bytes.Buffer
+	w, err := flate.NewWriter(&compressed, flate.BestCompression)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.Write(input); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	trace, err := deflate.ParseRaw(compressed.Bytes())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var match deflate.Op
+	found := false
+	for _, op := range trace.Ops {
+		if op.Kind == deflate.MatchOp && op.Length > op.Distance {
+			match, found = op, true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("fixture contains no overlapping match")
+	}
+	doc := &document{trace: trace}
+	seed, _ := match.Seed()
+	hover := doc.hover(match)
+	wants := []string{
+		fmt.Sprintf("Copy: `%d B` from `%d B` back", match.Length, match.Distance),
+		fmt.Sprintf("Seed: `out[%d:%d)` %s", seed.Start, seed.End, bytePreview(doc.outputBytes(seed))),
+		fmt.Sprintf("Result: `out[%d:%d)` %s", match.Output.Start, match.Output.End, bytePreview(doc.outputBytes(match.Output))),
+		"Overlap:",
+		"become its next source bytes",
+	}
+	for _, want := range wants {
+		if !strings.Contains(hover, want) {
+			t.Fatalf("match hover missing %q:\n%s", want, hover)
+		}
+	}
+	if !strings.Contains(hover, "B total") {
+		t.Fatalf("long result preview is not bounded:\n%s", hover)
 	}
 }
 

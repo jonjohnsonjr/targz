@@ -1849,12 +1849,39 @@ func (d *document) hover(op deflate.Op) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "**%s %%%d**  \nOutput: `[%d:%d)`  \nCompressed bits: `[%s:%s)`", op.Kind, op.ID, op.Output.Start, op.Output.End, op.Input.Start, op.Input.End)
 	if seed, ok := op.Seed(); ok {
-		fmt.Fprintf(&b, "  \nSource seed: `[%d:%d)`", seed.Start, seed.End)
+		seedBytes := d.outputBytes(seed)
+		outputBytes := d.outputBytes(op.Output)
+		fmt.Fprintf(&b, "  \nCopy: `%d B` from `%d B` back", op.Length, op.Distance)
+		fmt.Fprintf(&b, "  \nSeed: `out[%d:%d)` %s", seed.Start, seed.End, bytePreview(seedBytes))
+		fmt.Fprintf(&b, "  \nResult: `out[%d:%d)` %s", op.Output.Start, op.Output.End, bytePreview(outputBytes))
 		if op.Length > op.Distance {
-			fmt.Fprintf(&b, "  \nOverlapping copy: the %d-byte seed repeats %d times. The newly written bytes become source bytes during the same operation.", op.Distance, (op.Length+op.Distance-1)/op.Distance)
+			fmt.Fprintf(&b, "  \nOverlap: the `%d B` seed tiles the result `%d` times; bytes written by this match become its next source bytes.", op.Distance, (op.Length+op.Distance-1)/op.Distance)
 		}
 	}
 	return b.String()
+}
+
+func (d *document) outputBytes(output deflate.OutRange) []byte {
+	start, end := int(output.Start), int(output.End)
+	if start < 0 || end < start || end > len(d.trace.Output) {
+		return nil
+	}
+	return d.trace.Output[start:end]
+}
+
+func bytePreview(value []byte) string {
+	const limit = 48
+	preview := value
+	truncated := len(preview) > limit
+	if truncated {
+		preview = preview[:limit]
+	}
+	quoted := strconv.QuoteToASCII(string(preview))
+	quoted = strings.ReplaceAll(quoted, "`", `\x60`)
+	if truncated {
+		return fmt.Sprintf("`%s` … `%d B total`", quoted, len(value))
+	}
+	return "`" + quoted + "`"
 }
 
 func (s *Server) readMessage() ([]byte, error) {
