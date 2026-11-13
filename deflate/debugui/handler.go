@@ -117,6 +117,14 @@ type blockDetailView struct {
 	Fields []decodeStage `json:"fields"`
 	Bits   string        `json:"bits"`
 	Runs   int           `json:"runs,omitempty"`
+	Layers []blockLayer  `json:"layers,omitempty"`
+}
+
+type blockLayer struct {
+	ID      string        `json:"id"`
+	Title   string        `json:"title"`
+	Summary string        `json:"summary"`
+	Items   []decodeStage `json:"items"`
 }
 
 func (s *server) index(w http.ResponseWriter, _ *http.Request) {
@@ -311,6 +319,7 @@ func (s *server) block(w http.ResponseWriter, r *http.Request) {
 			s.headerStage("HCLEN", block.Dynamic.HCLEN, block.Dynamic.NumCodeLengths, "code-length code lengths"),
 		)
 		view.Runs = len(block.Dynamic.LengthRuns)
+		view.Layers = s.dynamicBlockLayers(block)
 	}
 	if block.Kind == deflate.StoredBlock && block.Header.Len() >= 32 {
 		lengthStart := block.Header.End - 32
@@ -324,6 +333,126 @@ func (s *server) block(w http.ResponseWriter, r *http.Request) {
 		)
 	}
 	writeJSON(w, view)
+}
+
+func (s *server) dynamicBlockLayers(block deflate.Block) []blockLayer {
+	header := block.Dynamic
+	if header == nil {
+		return nil
+	}
+	stage := func(key, level, bits, value, detail string, input deflate.BitRange) decodeStage {
+		var inputView *span
+		if input.Len() != 0 {
+			view := viewSpan(input)
+			inputView = &view
+		}
+		return decodeStage{Key: key, Level: level, Bits: bits, Input: inputView, Value: value, Detail: detail}
+	}
+	layers := []blockLayer{{
+		ID: "hclen", Title: "HCLEN vector",
+		Summary: fmt.Sprintf("%d three-bit fields assign lengths to the code-length alphabet", len(header.CodeLengths)),
+	}}
+	for i, field := range header.CodeLengths {
+		bits, _ := s.trace.BitString(field.Input)
+		layers[0].Items = append(layers[0].Items, stage(
+			fmt.Sprintf("hclen:%d", i), fmt.Sprintf("slot %d", i), bits,
+			fmt.Sprintf("symbol %d → %d bits", field.Symbol, field.Length), "RFC transmission order", field.Input,
+		))
+	}
+
+	codeTree := blockLayer{ID: "codelen", Title: "code-length tree", Summary: "the HCLEN vector becomes a tiny Huffman tree for reading the length program"}
+	if block.CodeTable != nil {
+		for _, code := range block.CodeTable.Codes {
+			input := deflate.BitRange{}
+			for _, field := range header.CodeLengths {
+				if field.Symbol == code.Symbol {
+					input = field.Input
+					break
+				}
+			}
+			codeTree.Items = append(codeTree.Items, stage(
+				fmt.Sprintf("codelen:%d", code.Symbol), fmt.Sprintf("symbol %d", code.Symbol), codeBits(code),
+				fmt.Sprintf("%d-bit code", code.Bits), "canonical Huffman code", input,
+			))
+		}
+	}
+	layers = append(layers, codeTree)
+
+	program := blockLayer{ID: "program", Title: "length program", Summary: fmt.Sprintf("%d Huffman instructions expand into %d code lengths", len(header.LengthRuns), header.NumLiteralLengths+header.NumDistanceLengths)}
+	for i, run := range header.LengthRuns {
+		bits, _ := s.trace.BitString(run.Input)
+		program.Items = append(program.Items, stage(
+			fmt.Sprintf("run:%d", i), fmt.Sprintf("run %d", i), bits, lengthRunValue(run),
+			webSlotRange(header, run.SlotsStart, run.SlotsEnd), run.Input,
+		))
+	}
+	layers = append(layers, program)
+
+	lengthLayer := func(id, title, alphabet string, start, count int) blockLayer {
+		layer := blockLayer{ID: id, Title: title, Summary: fmt.Sprintf("%d symbol slots receive the lengths produced by the program", count)}
+		for symbol := 0; symbol < count; symbol++ {
+			runIndex, run, ok := findLengthRun(header, start+symbol)
+			if !ok {
+				continue
+			}
+			layer.Items = append(layer.Items, stage(
+				fmt.Sprintf("%s-length:%d", alphabet, symbol), fmt.Sprintf("symbol %d", symbol), "",
+				fmt.Sprintf("%d bits", run.Length), fmt.Sprintf("from run %d", runIndex), run.Input,
+			))
+		}
+		return layer
+	}
+	layers = append(layers,
+		lengthLayer("litlen-lengths", "literal/length code lengths", "litlen", 0, header.NumLiteralLengths),
+		lengthLayer("distance-lengths", "distance code lengths", "distance", header.NumLiteralLengths, header.NumDistanceLengths),
+	)
+
+	codeLayer := func(id, title, alphabet string, table *deflate.HuffmanTable, offset int) blockLayer {
+		layer := blockLayer{ID: id, Title: title, Summary: "non-zero lengths become the canonical codes used by the payload"}
+		if table == nil {
+			return layer
+		}
+		for _, code := range table.Codes {
+			_, run, _ := findLengthRun(header, offset+code.Symbol)
+			meaning := "distance code"
+			if alphabet == "litlen" {
+				switch {
+				case code.Symbol < 256:
+					meaning = "literal " + printableByte(byte(code.Symbol))
+				case code.Symbol == 256:
+					meaning = "end of block"
+				default:
+					meaning = "length code"
+				}
+			}
+			layer.Items = append(layer.Items, stage(
+				fmt.Sprintf("%s-code:%d", alphabet, code.Symbol), fmt.Sprintf("symbol %d", code.Symbol), codeBits(code),
+				meaning, fmt.Sprintf("canonical code · %d bits", code.Bits), run.Input,
+			))
+		}
+		return layer
+	}
+	layers = append(layers,
+		codeLayer("litlen-tree", "literal/length tree", "litlen", block.LiteralTable, 0),
+		codeLayer("distance-tree", "distance tree", "distance", block.DistanceTable, header.NumLiteralLengths),
+	)
+	return layers
+}
+
+func webSlotRange(header *deflate.DynamicHeader, start, end int) string {
+	nlit := header.NumLiteralLengths
+	switch {
+	case end == start+1 && end <= nlit:
+		return fmt.Sprintf("litlen[%d]", start)
+	case end == start+1 && start >= nlit:
+		return fmt.Sprintf("distance[%d]", start-nlit)
+	case end <= nlit:
+		return fmt.Sprintf("litlen[%d:%d]", start, end)
+	case start >= nlit:
+		return fmt.Sprintf("distance[%d:%d]", start-nlit, end-nlit)
+	default:
+		return fmt.Sprintf("litlen[%d:%d] + distance[0:%d]", start, nlit, end-nlit)
+	}
 }
 
 func (s *server) decodeBranch(block deflate.Block, alphabet string, symbol int, codeInput, extraInput deflate.BitRange, result string) decodeBranch {

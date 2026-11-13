@@ -180,6 +180,18 @@ func TestDynamicDecodeStack(t *testing.T) {
 	if len(blockView.Fields) != 5 || blockView.Runs == 0 {
 		t.Fatalf("dynamic block header = %#v, want five primary fields and length runs", blockView)
 	}
+	wantLayers := []string{"hclen", "codelen", "program", "litlen-lengths", "distance-lengths", "litlen-tree", "distance-tree"}
+	if len(blockView.Layers) != len(wantLayers) {
+		t.Fatalf("dynamic layers = %d, want %d", len(blockView.Layers), len(wantLayers))
+	}
+	for i, want := range wantLayers {
+		if got := blockView.Layers[i].ID; got != want {
+			t.Fatalf("layer %d = %q, want %q", i, got, want)
+		}
+		if len(blockView.Layers[i].Items) == 0 {
+			t.Fatalf("layer %q has no items", want)
+		}
+	}
 }
 
 func TestAPIErrorsAreJSON(t *testing.T) {
