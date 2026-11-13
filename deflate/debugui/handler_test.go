@@ -69,6 +69,32 @@ func TestWorkbench(t *testing.T) {
 	}
 }
 
+func TestWindowsIncludeScrollAnchors(t *testing.T) {
+	for _, path := range []string{
+		"/api/input?start=40&length=24",
+		"/api/output?start=0&length=3",
+	} {
+		t.Run(path, func(t *testing.T) {
+			request := httptest.NewRequest(http.MethodGet, path, nil)
+			response := httptest.NewRecorder()
+			Handler(testTrace(t)).ServeHTTP(response, request)
+			var value struct {
+				Anchors [][5]uint64 `json:"anchors"`
+			}
+			if err := json.NewDecoder(response.Body).Decode(&value); err != nil {
+				t.Fatal(err)
+			}
+			if len(value.Anchors) == 0 {
+				t.Fatal("window has no scroll anchors")
+			}
+			anchor := value.Anchors[0]
+			if anchor[1] != 40 || anchor[2] != 64 || anchor[3] != 0 || anchor[4] != 3 {
+				t.Fatalf("anchor = %v, want input [40,64) and output [0,3)", anchor)
+			}
+		})
+	}
+}
+
 func TestDynamicDecodeStack(t *testing.T) {
 	input := bytes.Repeat([]byte("the quick brown fox jumps over the lazy dog; "), 200)
 	var compressed bytes.Buffer

@@ -57,7 +57,10 @@ Their scroll positions are semantically linked by default: the operation at the
 center of the pane maps compressed bits to its produced output range (and output
 bytes back to their producing input), rather than pretending the two coordinate
 systems have a linear ratio. Use the `↔ linked` control to browse them
-independently.
+independently. Each window includes a compact operation-range index, so normal
+linked movement is a local binary search synchronized to the next animation
+frame; another request is needed only when the counterpart leaves its loaded
+window.
 
 #### `gzpls`: IDE-grade language intelligence for gzip
 

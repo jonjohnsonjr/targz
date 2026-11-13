@@ -499,10 +499,11 @@ func (s *server) output(w http.ResponseWriter, r *http.Request) {
 		return r
 	}, string(b))
 	writeJSON(w, map[string]any{
-		"start": start,
-		"end":   end,
-		"hex":   hex.EncodeToString(b),
-		"text":  text,
+		"start":   start,
+		"end":     end,
+		"hex":     hex.EncodeToString(b),
+		"text":    text,
+		"anchors": s.outputAnchors(start, end),
 	})
 }
 
@@ -535,7 +536,51 @@ func (s *server) input(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	writeJSON(w, map[string]any{"startBit": start, "endBit": end, "bits": bits})
+	writeJSON(w, map[string]any{
+		"startBit": start,
+		"endBit":   end,
+		"bits":     bits,
+		"anchors":  s.inputAnchors(start, end),
+	})
+}
+
+// Anchors use [operation id, input start, input end, output start, output end].
+// The positional encoding keeps the per-window scroll index compact enough to
+// ship with the bytes/bits it describes.
+func (s *server) inputAnchors(start, end uint64) [][5]uint64 {
+	first := sort.Search(len(s.trace.Ops), func(i int) bool {
+		return uint64(s.trace.Ops[i].Input.End) > start
+	})
+	anchors := make([][5]uint64, 0, 256)
+	for _, op := range s.trace.Ops[first:] {
+		if uint64(op.Input.Start) >= end {
+			break
+		}
+		anchors = append(anchors, scrollAnchor(op))
+	}
+	return anchors
+}
+
+func (s *server) outputAnchors(start, end uint64) [][5]uint64 {
+	first := sort.Search(len(s.trace.Ops), func(i int) bool {
+		return uint64(s.trace.Ops[i].Output.End) > start
+	})
+	anchors := make([][5]uint64, 0, 256)
+	for _, op := range s.trace.Ops[first:] {
+		if uint64(op.Output.Start) >= end {
+			break
+		}
+		anchors = append(anchors, scrollAnchor(op))
+	}
+	return anchors
+}
+
+func scrollAnchor(op deflate.Op) [5]uint64 {
+	return [5]uint64{
+		uint64(op.ID),
+		uint64(op.Input.Start), uint64(op.Input.End),
+		uint64(op.Output.Start), uint64(op.Output.End),
+	}
 }
 
 func viewBlock(block deflate.Block) blockView {
