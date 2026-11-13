@@ -45,7 +45,9 @@ header which declared them. Decoded output can switch between a hex-editor view
 and a readable ASCII view without losing byte-level selection or highlighting.
 Hover a byte or character to preview its producing compressed bits; click to
 pin it and trace its ancestry. Use `j`/`k` to step through operations and
-`[`/`]` to page the trace. It binds to a random localhost port by default.
+`[`/`]` to page the trace. Every panel scrolls independently, including in the
+two-row and narrow single-column layouts. It binds to a random localhost port
+by default.
 
 #### `gzpls`: IDE-grade language intelligence for gzip
 
