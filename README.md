@@ -41,9 +41,11 @@ and reports the local expansion ratio.
 Back-references show their normalized seed beside the bytes they produce;
 dynamic blocks show the literal/length and distance paths side by side, from
 payload bits through the generated Huffman tables and back to the dynamic
-header which declared them. Click a byte to trace its ancestry, use `j`/`k` to
-step through operations, and use `[`/`]` to page the trace. It binds to a
-random localhost port by default.
+header which declared them. Decoded output can switch between a hex-editor view
+and a readable ASCII view without losing byte-level selection or highlighting.
+Click a byte or character to trace its ancestry, use `j`/`k` to step through
+operations, and use `[`/`]` to page the trace. It binds to a random localhost
+port by default.
 
 #### `gzpls`: IDE-grade language intelligence for gzip
 
