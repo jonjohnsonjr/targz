@@ -31,6 +31,7 @@ func TestAPI(t *testing.T) {
 		"/api/ops?start=0&limit=10",
 		"/api/op?id=0",
 		"/api/producer?offset=1",
+		"/api/input-anchor?bit=48",
 		"/api/decode?id=0",
 		"/api/origin?offset=1",
 		"/api/uses?start=0&end=1",
@@ -61,7 +62,7 @@ func TestWorkbench(t *testing.T) {
 	if response.Code != http.StatusOK {
 		t.Fatalf("status = %d", response.Code)
 	}
-	for _, want := range []string{"deflate.inspect", "decoded output", "viewAscii", "inspectRelation", "inspectOrigin", "inspectDecode", "copy map", "decode stack"} {
+	for _, want := range []string{"deflate.inspect", "decoded output", "viewAscii", "linkScroll", "inspectRelation", "inspectOrigin", "inspectDecode", "copy map", "decode stack"} {
 		if !bytes.Contains(response.Body.Bytes(), []byte(want)) {
 			t.Errorf("workbench HTML does not contain %q", want)
 		}

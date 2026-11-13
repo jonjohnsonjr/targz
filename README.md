@@ -53,6 +53,11 @@ two-row and narrow single-column layouts. It binds to a random localhost port
 by default. The compressed and decoded panes retain substantial centered
 context windows (2,048 bits and 2,048 bytes respectively), so they remain
 meaningfully scrollable while the active mapping stays in view.
+Their scroll positions are semantically linked by default: the operation at the
+center of the pane maps compressed bits to its produced output range (and output
+bytes back to their producing input), rather than pretending the two coordinate
+systems have a linear ratio. Use the `↔ linked` control to browse them
+independently.
 
 #### `gzpls`: IDE-grade language intelligence for gzip
 

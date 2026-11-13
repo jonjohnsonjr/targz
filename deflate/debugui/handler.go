@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -27,6 +28,7 @@ func Handler(trace *deflate.Trace) http.Handler {
 	mux.HandleFunc("GET /api/ops", s.ops)
 	mux.HandleFunc("GET /api/op", s.op)
 	mux.HandleFunc("GET /api/producer", s.producer)
+	mux.HandleFunc("GET /api/input-anchor", s.inputAnchor)
 	mux.HandleFunc("GET /api/decode", s.decode)
 	mux.HandleFunc("GET /api/origin", s.origin)
 	mux.HandleFunc("GET /api/uses", s.uses)
@@ -195,6 +197,37 @@ func (s *server) producer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, s.viewOp(op))
+}
+
+// inputAnchor returns the operation at, or nearest to, a compressed-input bit.
+// Header and alignment gaps are associated with the closest payload operation,
+// which is more useful for synchronized browsing than returning no mapping.
+func (s *server) inputAnchor(w http.ResponseWriter, r *http.Request) {
+	bit, err := queryUint64(r, "bit", 0)
+	if err != nil || bit >= uint64(s.trace.ConsumedBits()) {
+		if err == nil {
+			err = fmt.Errorf("input bit %d is outside [0,%d)", bit, s.trace.ConsumedBits())
+		}
+		writeError(w, err)
+		return
+	}
+	if len(s.trace.Ops) == 0 {
+		writeError(w, fmt.Errorf("trace has no operations"))
+		return
+	}
+	i := sort.Search(len(s.trace.Ops), func(i int) bool {
+		return uint64(s.trace.Ops[i].Input.End) > bit
+	})
+	if i == len(s.trace.Ops) {
+		i--
+	} else if i > 0 && bit < uint64(s.trace.Ops[i].Input.Start) {
+		previousEnd := uint64(s.trace.Ops[i-1].Input.End)
+		nextStart := uint64(s.trace.Ops[i].Input.Start)
+		if bit-previousEnd <= nextStart-bit {
+			i--
+		}
+	}
+	writeJSON(w, s.viewOp(s.trace.Ops[i]))
 }
 
 func (s *server) decode(w http.ResponseWriter, r *http.Request) {
