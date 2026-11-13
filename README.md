@@ -33,9 +33,9 @@ Or launch the interactive debugger:
 go run ./cmd/deflate-debug-web archive.tar.gz
 ```
 
-The web debugger is a dense, three-pane workbench: compressed input and decoded
-output, the instruction stream, and the relationships behind the current
-selection. Selecting an output byte highlights the exact compressed bits which
+The web debugger is a dense, four-region workbench. Compressed input and decoded
+output form the primary side-by-side comparison; the supporting instruction
+stream and focused inspector sit below them. Selecting an output byte highlights the exact compressed bits which
 produced its operation, including distinct Huffman-code and extra-bit spans,
 and reports the local expansion ratio.
 The inspector uses progressive disclosure: its default relationship view is a
