@@ -34,11 +34,12 @@ go run ./cmd/deflate-debug-web archive.tar.gz
 ```
 
 The web UI keeps the compressed bits and decoded text side by side as the
-primary document. Both panes page transparently as they scroll, remain loosely
-locked by provenance rather than byte position, and mark block starts with
-quiet inline rules. There is no separate block chooser: scrolling is how the
-reader moves through blocks, while selecting a boundary opens its header
-construction below. A compact stream at the bottom makes literals and
+primary document. Both panes page transparently and independently as they
+scroll, and mark block starts with quiet inline rules. There is no separate
+block chooser: scrolling is how the reader moves through blocks, while
+selecting a boundary opens its header construction below. Hovering or selecting
+decoded output reveals the corresponding compressed input without coupling the
+two scroll positions. A compact stream at the bottom makes literals and
 back-references visible as the rhythm of the file without turning the main view
 into a trace table. Selecting an output byte
 highlights the exact compressed bits which produced it, including distinct
@@ -72,14 +73,10 @@ two-row and narrow single-column layouts. It binds to a random localhost port
 by default. The compressed and decoded panes retain substantial centered
 context windows (2,048 bits and 2,048 bytes respectively), so they remain
 meaningfully scrollable while the active mapping stays in view.
-Their scroll positions are semantically linked by default: the operation at the
-center of the pane maps compressed bits to its produced output range (and output
-bytes back to their producing input), rather than pretending the two coordinate
-systems have a linear ratio. Use the `↔ linked` control to browse them
-independently. Each window includes a compact operation-range index, so normal
-linked movement is a local binary search synchronized to the next animation
-frame; another request is needed only when the counterpart leaves its loaded
-window.
+The scroll positions are deliberately independent: compressed and decoded
+coordinates do not have a stable linear relationship, and coupling their
+movement made both panes harder to control. Provenance remains an explicit
+hover-and-selection interaction instead.
 
 #### `gzpls`: IDE-grade language intelligence for gzip
 
