@@ -15,7 +15,7 @@ import (
 	"github.com/jonjohnsonjr/targz/deflate"
 )
 
-//go:embed index.html
+//go:embed workbench.html
 var indexHTML []byte
 
 // Handler returns a read-only debugger application for trace.
@@ -26,6 +26,7 @@ func Handler(trace *deflate.Trace) http.Handler {
 	mux.HandleFunc("GET /api/summary", s.summary)
 	mux.HandleFunc("GET /api/ops", s.ops)
 	mux.HandleFunc("GET /api/op", s.op)
+	mux.HandleFunc("GET /api/decode", s.decode)
 	mux.HandleFunc("GET /api/origin", s.origin)
 	mux.HandleFunc("GET /api/uses", s.uses)
 	mux.HandleFunc("GET /api/output", s.output)
@@ -79,6 +80,29 @@ type opView struct {
 	DistanceCode      string `json:"distanceCode,omitempty"`
 	DistanceExtraBits span   `json:"distanceExtraBits"`
 	DistanceExtraCode string `json:"distanceExtraCode,omitempty"`
+}
+
+type decodeStage struct {
+	Key      string `json:"key"`
+	Level    string `json:"level"`
+	Bits     string `json:"bits,omitempty"`
+	Input    *span  `json:"input,omitempty"`
+	Value    string `json:"value"`
+	Detail   string `json:"detail,omitempty"`
+	Relation string `json:"relation,omitempty"`
+}
+
+type decodeBranch struct {
+	Name   string        `json:"name"`
+	Stages []decodeStage `json:"stages"`
+}
+
+type decodeView struct {
+	OpID     int            `json:"opId"`
+	BlockID  int            `json:"blockId"`
+	Block    string         `json:"block"`
+	Branches []decodeBranch `json:"branches"`
+	Header   []decodeStage  `json:"header,omitempty"`
 }
 
 func (s *server) index(w http.ResponseWriter, _ *http.Request) {
@@ -150,6 +174,177 @@ func (s *server) op(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, s.viewOp(s.trace.Ops[id]))
+}
+
+func (s *server) decode(w http.ResponseWriter, r *http.Request) {
+	id, err := queryInt(r, "id", -1)
+	if err != nil || id < 0 || id >= len(s.trace.Ops) {
+		if err == nil {
+			err = fmt.Errorf("operation id %d is outside [0,%d)", id, len(s.trace.Ops))
+		}
+		writeError(w, err)
+		return
+	}
+	op := s.trace.Ops[id]
+	block := s.trace.Blocks[op.BlockID]
+	view := decodeView{OpID: op.ID, BlockID: block.ID, Block: block.Kind.String()}
+	switch op.Kind {
+	case deflate.LiteralOp:
+		view.Branches = append(view.Branches, s.decodeBranch(block, "literal/length", int(op.Literal), op.SymbolBits, deflate.BitRange{},
+			fmt.Sprintf("literal %s", printableByte(op.Literal))))
+	case deflate.MatchOp:
+		view.Branches = append(view.Branches,
+			s.decodeBranch(block, "literal/length", int(op.LengthSymbol), op.SymbolBits, op.LengthExtraBits, fmt.Sprintf("length %d", op.Length)),
+			s.decodeBranch(block, "distance", int(op.DistanceSymbol), op.DistanceBits, op.DistanceExtraBits, fmt.Sprintf("distance %d", op.Distance)),
+		)
+	case deflate.StoredOp:
+		bits, _ := s.trace.BitString(op.Input)
+		input := viewSpan(op.Input)
+		view.Branches = []decodeBranch{{Name: "stored bytes", Stages: []decodeStage{{
+			Key: "stored", Level: "stored payload", Bits: bits, Input: &input,
+			Value: fmt.Sprintf("%d uncompressed bytes", op.Length), Relation: "copied directly",
+		}}}}
+	}
+	if block.Dynamic != nil {
+		view.Header = []decodeStage{
+			s.headerStage("HLIT", block.Dynamic.HLIT, block.Dynamic.NumLiteralLengths, "literal/length code lengths"),
+			s.headerStage("HDIST", block.Dynamic.HDIST, block.Dynamic.NumDistanceLengths, "distance code lengths"),
+			s.headerStage("HCLEN", block.Dynamic.HCLEN, block.Dynamic.NumCodeLengths, "code-length code lengths"),
+		}
+	}
+	writeJSON(w, view)
+}
+
+func (s *server) decodeBranch(block deflate.Block, alphabet string, symbol int, codeInput, extraInput deflate.BitRange, result string) decodeBranch {
+	wire, _ := s.trace.BitString(codeInput)
+	payloadInput := codeInput
+	detail := result
+	if extraInput.Len() != 0 {
+		extra, _ := s.trace.BitString(extraInput)
+		wire += " · " + extra
+		payloadInput.End = extraInput.End
+		detail += fmt.Sprintf(" · %d extra bit(s)", extraInput.Len())
+	}
+	inputView := viewSpan(payloadInput)
+	branch := decodeBranch{Name: alphabet, Stages: []decodeStage{{
+		Key: fmt.Sprintf("payload:%s:%d", alphabet, symbol), Level: "payload bits", Bits: wire, Input: &inputView,
+		Value: fmt.Sprintf("symbol %d", symbol), Detail: detail, Relation: "decodes as",
+	}}}
+	table := block.LiteralTable
+	if alphabet == "distance" {
+		table = block.DistanceTable
+	}
+	if code, ok := findCode(table, symbol); ok {
+		branch.Stages = append(branch.Stages, decodeStage{
+			Key: fmt.Sprintf("table:%d:%s:%d", block.ID, alphabet, symbol), Level: alphabet + " tree",
+			Bits: codeBits(code), Value: fmt.Sprintf("leaf %d", symbol),
+			Detail: fmt.Sprintf("canonical code · %d bits", code.Bits), Relation: "defined by",
+		})
+	}
+	if block.Dynamic == nil {
+		branch.Stages = append(branch.Stages, decodeStage{
+			Key: "fixed:" + alphabet, Level: "fixed table", Value: "RFC 1951 §3.2.6",
+			Detail: "static code lengths", Relation: "specified by",
+		})
+		return branch
+	}
+	header := block.Dynamic
+	slot := symbol
+	if alphabet == "distance" {
+		slot += header.NumLiteralLengths
+	}
+	runIndex, run, ok := findLengthRun(header, slot)
+	if !ok {
+		return branch
+	}
+	branch.Stages = append(branch.Stages, decodeStage{
+		Key: fmt.Sprintf("slot:%d:%d", block.ID, slot), Level: "expanded lengths",
+		Value:  fmt.Sprintf("%s[%d] = %d", shortAlphabet(alphabet), symbol, run.Length),
+		Detail: fmt.Sprintf("slot %d of %d", slot, header.NumLiteralLengths+header.NumDistanceLengths), Relation: "gets its code length from",
+	})
+	runBits, _ := s.trace.BitString(run.Input)
+	runInput := viewSpan(run.Input)
+	branch.Stages = append(branch.Stages, decodeStage{
+		Key: fmt.Sprintf("run:%d:%d", block.ID, runIndex), Level: "length program", Bits: runBits, Input: &runInput,
+		Value: lengthRunValue(run), Detail: fmt.Sprintf("fills slots [%d:%d)", run.SlotsStart, run.SlotsEnd), Relation: "decoded instruction",
+	})
+	if code, found := findCode(block.CodeTable, run.Symbol); found {
+		branch.Stages = append(branch.Stages, decodeStage{
+			Key: fmt.Sprintf("codelen:%d:%d", block.ID, run.Symbol), Level: "code-length tree",
+			Bits: codeBits(code), Value: fmt.Sprintf("symbol %d", run.Symbol),
+			Detail: fmt.Sprintf("canonical code · %d bits", code.Bits), Relation: "defined by",
+		})
+	}
+	for fieldIndex, field := range header.CodeLengths {
+		if field.Symbol != run.Symbol {
+			continue
+		}
+		fieldBits, _ := s.trace.BitString(field.Input)
+		fieldInput := viewSpan(field.Input)
+		branch.Stages = append(branch.Stages, decodeStage{
+			Key: fmt.Sprintf("hclen:%d:%d", block.ID, fieldIndex), Level: "HCLEN vector", Bits: fieldBits, Input: &fieldInput,
+			Value:  fmt.Sprintf("symbol %d has %d-bit code", field.Symbol, field.Length),
+			Detail: fmt.Sprintf("transmission slot %d", fieldIndex), Relation: "declared by",
+		})
+		break
+	}
+	return branch
+}
+
+func (s *server) headerStage(name string, input deflate.BitRange, count int, detail string) decodeStage {
+	bits, _ := s.trace.BitString(input)
+	inputView := viewSpan(input)
+	return decodeStage{Key: "header:" + strings.ToLower(name), Level: name, Bits: bits, Input: &inputView,
+		Value: strconv.Itoa(count), Detail: detail}
+}
+
+func findCode(table *deflate.HuffmanTable, symbol int) (deflate.HuffmanCode, bool) {
+	if table != nil {
+		for _, code := range table.Codes {
+			if code.Symbol == symbol {
+				return code, true
+			}
+		}
+	}
+	return deflate.HuffmanCode{}, false
+}
+
+func findLengthRun(header *deflate.DynamicHeader, slot int) (int, deflate.CodeLengthRun, bool) {
+	for i, run := range header.LengthRuns {
+		if run.SlotsStart <= slot && slot < run.SlotsEnd {
+			return i, run, true
+		}
+	}
+	return 0, deflate.CodeLengthRun{}, false
+}
+
+func codeBits(code deflate.HuffmanCode) string {
+	return fmt.Sprintf("%0*b", code.Bits, code.Code)
+}
+
+func shortAlphabet(alphabet string) string {
+	if alphabet == "literal/length" {
+		return "litlen"
+	}
+	return alphabet
+}
+
+func lengthRunValue(run deflate.CodeLengthRun) string {
+	switch run.Symbol {
+	case 16:
+		return fmt.Sprintf("repeat previous length ×%d", run.Repeat)
+	case 17, 18:
+		return fmt.Sprintf("zero length ×%d", run.Repeat)
+	default:
+		return fmt.Sprintf("length %d", run.Length)
+	}
+}
+
+func printableByte(value byte) string {
+	if value >= 0x20 && value <= 0x7e {
+		return strconv.QuoteRune(rune(value))
+	}
+	return fmt.Sprintf("0x%02x", value)
 }
 
 func (s *server) origin(w http.ResponseWriter, r *http.Request) {

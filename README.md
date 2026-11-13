@@ -33,9 +33,14 @@ Or launch the interactive debugger:
 go run ./cmd/deflate-debug-web archive.tar.gz
 ```
 
-The web debugger provides block navigation, a paged instruction trace,
-clickable output bytes, normalized match seeds, origin chains, and reverse-use
-queries. It binds to a random localhost port by default.
+The web debugger is a dense, three-pane workbench: decoded output, the
+instruction stream, and the relationships behind the current selection.
+Back-references show their normalized seed beside the bytes they produce;
+dynamic blocks show the literal/length and distance paths side by side, from
+payload bits through the generated Huffman tables and back to the dynamic
+header which declared them. Click a byte to trace its ancestry, use `j`/`k` to
+step through operations, and use `[`/`]` to page the trace. It binds to a
+random localhost port by default.
 
 #### `gzpls`: IDE-grade language intelligence for gzip
 
