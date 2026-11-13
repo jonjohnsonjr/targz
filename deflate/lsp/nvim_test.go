@@ -75,11 +75,18 @@ func TestNeovimDefinitionWalk(t *testing.T) {
 	if output, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("build gzpls: %v\n%s", err, output)
 	}
+	repo, err := filepath.Abs(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	integration := filepath.Join(repo, "contrib", "gzpls.lua")
 	marker := filepath.Join(temp, "result")
 	lua := fmt.Sprintf(`
 local listing = %s
 local server = %s
+local repo = %s
 local marker = %s
+dofile(%s).setup({cmd = {server}, root_dir = repo})
 vim.cmd("edit " .. vim.fn.fnameescape(listing))
 local client_id = assert(vim.lsp.start({name = "gzpls-smoke", cmd = {server, "serve"}}))
 assert(vim.wait(5000, function()
@@ -89,6 +96,7 @@ end), "LSP initialization timed out")
 local client = assert(vim.lsp.get_client_by_id(client_id))
 local position = {line = %d, character = %d}
 local reached_rfc = false
+local reached_lengths = false
 for _ = 1, 8 do
   local params = {textDocument = {uri = vim.uri_from_bufnr(0)}, position = position}
   local response = assert(client:request_sync("textDocument/definition", params, 5000, 0))
@@ -107,12 +115,28 @@ for _ = 1, 8 do
   vim.cmd("edit " .. vim.fn.fnameescape(vim.uri_to_fname(link.targetUri)))
   assert(vim.lsp.buf_attach_client(0, client_id))
   position = link.targetSelectionRange.start
+  vim.api.nvim_win_set_cursor(0, {position.line + 1, position.character})
+  if string.match(link.targetUri, "%%.gzsym$") then
+    assert(vim.bo.filetype == "gzpls-symbols", "generated symbol filetype = " .. vim.bo.filetype)
+    assert(vim.wo.number, "generated symbol gutter has no line numbers")
+    assert(not vim.wo.relativenumber, "generated symbol gutter uses relative numbers")
+    assert(vim.wo.statuscolumn == "%%=%%{v:lnum - 1} ", "generated symbol statuscolumn = " .. vim.wo.statuscolumn)
+  end
+  if string.match(link.targetUri, "litlen%%-lengths%%.gzsym$") then
+    assert(vim.fn.line(".") - 1 == position.line, "litlen-lengths semantic line is not zero-based")
+    assert(string.match(vim.api.nvim_get_current_line(), "^# %%d+ bits?$"),
+      "broken litlen-lengths row: " .. vim.api.nvim_get_current_line())
+    reached_lengths = true
+  end
 end
 assert(reached_rfc, "definition walk did not reach RFC 1951")
+assert(reached_lengths, "definition walk did not reach litlen-lengths")
 vim.fn.writefile({"ok"}, marker)
-client:stop(true)
+for _, running in ipairs(vim.lsp.get_clients()) do
+  running:stop(true)
+end
 vim.cmd("qa!")
-`, strconv.Quote(listingPath), strconv.Quote(server), strconv.Quote(marker), start.Line, start.Character)
+`, strconv.Quote(listingPath), strconv.Quote(server), strconv.Quote(repo), strconv.Quote(marker), strconv.Quote(integration), start.Line, start.Character)
 	script := filepath.Join(temp, "smoke.lua")
 	if err := os.WriteFile(script, []byte(lua), 0o600); err != nil {
 		t.Fatal(err)

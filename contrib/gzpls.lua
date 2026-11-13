@@ -47,11 +47,26 @@ function M.setup(opts)
   pcall(vim.api.nvim_del_augroup_by_name, "tar")
 
   local group = vim.api.nvim_create_augroup("gzpls", { clear = true })
+  vim.filetype.add({
+    extension = { gzsym = "gzpls-symbols" },
+  })
+  vim.api.nvim_create_autocmd("FileType", {
+    group = group,
+    pattern = "gzpls-symbols",
+    callback = function()
+      vim.opt_local.number = true
+      vim.opt_local.relativenumber = false
+      -- Generated symbol documents are zero-based address spaces: the gutter
+      -- value is the literal/length symbol, distance symbol, or program slot.
+      vim.opt_local.statuscolumn = "%=%{v:lnum - 1} "
+    end,
+  })
   local jobs = {}
   local lsp_config = {
     name = "gzpls",
     cmd = command(cmd, "serve"),
     root_dir = root_dir,
+    filetypes = { "gzpls", "gzpls-symbols" },
   }
 
   local function attach(buf)
@@ -243,6 +258,9 @@ function M.setup(opts)
     callback = function(event)
       local name = vim.api.nvim_buf_get_name(event.buf)
       if name:find("/gzpls%-generated%-") then
+        if name:match("%.gzsym$") then
+          vim.bo[event.buf].filetype = "gzpls-symbols"
+        end
         attach(event.buf)
       end
     end,

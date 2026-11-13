@@ -239,27 +239,11 @@ Huffman tables, expanded length assignments, the compact length program, and
 the HCLEN vector open as generated `*.gzsym` documents. Their zero-based LSP
 line is the semantic address: literal/length symbol 257 and its assignment are
 line 257, program instruction 12 is line 12, code-length symbol 18 is line 18,
-and HCLEN transmission slot 17 is line 17. Neovim normally presents buffer
-lines as one-based, so give only this generated document type a semantic gutter:
+and HCLEN transmission slot 17 is line 17. `contrib/gzpls.lua` automatically
+gives only these generated documents a zero-based semantic gutter; trace, tar
+manifest, and RFC buffers retain their ordinary line-number display.
 
-```lua
-vim.filetype.add({
-  extension = { gzsym = "gzpls-symbols" },
-})
-
-vim.api.nvim_create_autocmd("FileType", {
-  pattern = "gzpls-symbols",
-  callback = function()
-    vim.opt_local.number = true
-    vim.opt_local.relativenumber = false
-    vim.opt_local.statuscolumn = "%=%{v:lnum - 1} "
-  end,
-})
-```
-
-Include `gzpls-symbols` in the `filetypes` for the `gzpls` LSP configuration.
-The generated files live only for the lifetime of the language server. The
-trace, tar manifest, and RFC buffers retain their ordinary line-number display.
+The generated files live only for the lifetime of the language server.
 Generated filenames include a fingerprint of the compressed source, so a
 rename or external rewrite navigates to a fresh symbol document instead of
 silently reusing a table from the previous stream.
