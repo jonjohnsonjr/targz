@@ -6,7 +6,6 @@ import (
 	"compress/flate"
 	"compress/gzip"
 	"encoding/json"
-	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -899,16 +898,10 @@ func TestAutoViewDetectsTarAndExposesEntries(t *testing.T) {
 		t.Fatal(err)
 	}
 	plainLinks := result.([]locationLink)
-	if len(plainLinks) != 1 || !strings.Contains(plainLinks[0].TargetURI, fmt.Sprintf("~%d-%d.deflate", entry.Data.Start+1, entry.Data.Start+2)) {
+	if len(plainLinks) != 1 || !strings.HasSuffix(plainLinks[0].TargetURI, "/.gzpls/trace.deflate") {
 		t.Fatalf("plaintext implementation = %#v", plainLinks)
 	}
-	plainProvenance := s.docs[plainLinks[0].TargetURI]
-	plainLine := plainLinks[0].TargetSelectionRange.Start.Line
-	toTrace := definitionLinksAtCharacter(t, s, plainProvenance.uri, plainLine, 0)
-	if len(toTrace) == 0 {
-		t.Fatal("plaintext provenance did not drill into the trace")
-	}
-	backToPlain := definitionLinksAtCharacter(t, s, toTrace[0].TargetURI, toTrace[0].TargetSelectionRange.Start.Line, toTrace[0].TargetSelectionRange.Start.Character)
+	backToPlain := definitionLinksAtCharacter(t, s, plainLinks[0].TargetURI, plainLinks[0].TargetSelectionRange.Start.Line, plainLinks[0].TargetSelectionRange.Start.Character)
 	if len(backToPlain) != 1 || backToPlain[0].TargetURI != definition[0].TargetURI {
 		t.Fatalf("trace output definition = %#v, want plaintext", backToPlain)
 	}
@@ -1044,15 +1037,10 @@ func TestAutoViewShowsNonTarContent(t *testing.T) {
 		t.Fatal(err)
 	}
 	links := result.([]locationLink)
-	if len(links) != 1 || !strings.Contains(links[0].TargetURI, "hello.txt~1-2.deflate") {
+	if len(links) != 1 || !strings.HasSuffix(links[0].TargetURI, "/.gzpls/trace.deflate") {
 		t.Fatalf("plaintext implementation = %#v", links)
 	}
-	provenance := s.docs[links[0].TargetURI]
-	toTrace := definitionLinksAtCharacter(t, s, provenance.uri, links[0].TargetSelectionRange.Start.Line, 0)
-	if len(toTrace) == 0 {
-		t.Fatal("root plaintext provenance did not drill into the trace")
-	}
-	backToPlain := definitionLinksAtCharacter(t, s, toTrace[0].TargetURI, toTrace[0].TargetSelectionRange.Start.Line, toTrace[0].TargetSelectionRange.Start.Character)
+	backToPlain := definitionLinksAtCharacter(t, s, links[0].TargetURI, links[0].TargetSelectionRange.Start.Line, links[0].TargetSelectionRange.Start.Character)
 	if len(backToPlain) != 1 || backToPlain[0].TargetURI != uri {
 		t.Fatalf("root trace output definition = %#v, want plaintext", backToPlain)
 	}

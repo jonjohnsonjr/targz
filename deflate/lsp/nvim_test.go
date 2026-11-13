@@ -206,8 +206,8 @@ vim.api.nvim_win_set_cursor(0, {1, 1})
 assert(vim.fn.maparg("gri", "n") ~= "", "gzpls did not install gri mapping")
 vim.cmd("normal gri")
 assert(vim.wait(5000, function()
-  return string.match(vim.api.nvim_buf_get_name(0), "/%%.gzpls/provenance/hello%%.txt~1%%-2%%.deflate$") ~= nil
-end), "implementation did not enter plaintext provenance: " .. vim.api.nvim_buf_get_name(0))
+  return string.match(vim.api.nvim_buf_get_name(0), "/%%.gzpls/trace%%.deflate$") ~= nil
+end), "implementation did not enter the trace: " .. vim.api.nvim_buf_get_name(0))
 vim.fn.writefile({"ok"}, marker)
 for _, client in ipairs(vim.lsp.get_clients({name = "gzpls"})) do
   client:stop(true)

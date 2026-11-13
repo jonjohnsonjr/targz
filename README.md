@@ -163,8 +163,9 @@ Navigation follows the same three questions at every format layer:
 
 Extracted text remains ordinary, syntax-highlightable source, but gzpls keeps
 an invisible mapping from each UTF-16 editor position to its decoded archive
-offset. **Go to Implementation** on a character opens provenance for that exact
-byte range; **Find References** returns later DEFLATE matches which consume it.
+offset. **Go to Implementation** on a character jumps directly to the trace
+operation which produces that exact byte range; **Find References** returns
+later DEFLATE matches which consume it.
 In the trace, Definition on a literal's displayed value or a match's `×length`
 returns to the intersecting plaintext range, while `←distance` continues to
 follow the match's copy source. This makes plaintext → implementation → trace →

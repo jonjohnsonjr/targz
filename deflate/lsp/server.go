@@ -462,13 +462,7 @@ func (s *Server) handle(method string, raw json.RawMessage) (any, error) {
 		if doc, query, ok, err := s.plaintextAt(raw); err != nil {
 			return nil, err
 		} else if ok {
-			if err := s.ensureTrace(doc); err != nil {
-				return nil, err
-			}
-			entry := doc.plain.entry
-			at, _ := requestPosition(raw)
-			entry.NameToken = lspRange{Start: at, End: at}
-			return s.tarImplementationsRange(doc, entry, query)
+			return s.plaintextImplementations(doc, query)
 		}
 		if doc, entry, ok, err := s.tarEntryAt(raw); err != nil {
 			return nil, err
@@ -1487,6 +1481,28 @@ func (s *Server) plaintextDefinition(op deflate.Op, origin lspRange) (locationLi
 		return locationLink{OriginSelectionRange: origin, TargetURI: doc.uri, TargetRange: target, TargetSelectionRange: target}, true
 	}
 	return locationLink{}, false
+}
+
+func (s *Server) plaintextImplementations(d *document, query deflate.OutRange) ([]locationLink, error) {
+	if err := s.ensureTrace(d); err != nil {
+		return nil, fmt.Errorf("load DEFLATE trace: %w", err)
+	}
+	traceDoc, err := s.tarTraceDocument(d)
+	if err != nil {
+		return nil, err
+	}
+	origin := d.plain.outputRange(query)
+	productions := d.trace.Producers(query)
+	links := make([]locationLink, 0, len(productions))
+	for _, production := range productions {
+		links = append(links, locationLink{
+			OriginSelectionRange: origin,
+			TargetURI:            traceDoc.uri,
+			TargetRange:          traceDoc.opRange(production.Op.ID),
+			TargetSelectionRange: traceDoc.tokens[production.Op.ID].Output,
+		})
+	}
+	return links, nil
 }
 
 func isTextFile(path string) (bool, error) {
