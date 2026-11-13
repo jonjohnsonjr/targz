@@ -533,6 +533,10 @@ func quickFileRevision(path string) ([sha256.Size]byte, error) {
 }
 
 func encodingTokenRanges(text string, line int) encodingTokens {
+	if strings.HasPrefix(text, "length ") {
+		start := len("length ")
+		return encodingTokens{Primary: byteRange(text, line, start, len(text))}
+	}
 	if strings.HasPrefix(text, "# ") {
 		start := len("# ")
 		end := strings.IndexAny(text[start:], " \t")

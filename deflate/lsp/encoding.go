@@ -136,7 +136,7 @@ func buildEncodingGraph(trace *deflate.Trace) encodingGraph {
 				Label: lengthSlotLabel(block.ID, labelAlphabet, symbol), Parent: lengthRunLabel(block.ID, runIndex),
 				Name:     fmt.Sprintf("%s code length %d", labelAlphabet, symbol),
 				Alphabet: alphabet, Symbol: symbol, BlockID: block.ID,
-				Text: lengthAssignmentText(trace, run),
+				Text: lengthAssignmentText(run),
 			})
 		}
 		for runIndex, run := range header.LengthRuns {
@@ -275,16 +275,8 @@ func codeLengthField(header *deflate.DynamicHeader, symbol int) int {
 	return -1
 }
 
-func lengthAssignmentText(trace *deflate.Trace, run deflate.CodeLengthRun) string {
-	wire := mustBitString(trace, run.SymbolBits)
-	if run.ExtraBits.Len() != 0 {
-		wire += "·" + mustBitString(trace, run.ExtraBits)
-	}
-	unit := "bits"
-	if run.Length == 1 {
-		unit = "bit"
-	}
-	return fmt.Sprintf("%-15s # %d %s", wire, run.Length, unit)
+func lengthAssignmentText(run deflate.CodeLengthRun) string {
+	return fmt.Sprintf("length %d", run.Length)
 }
 
 func lengthRunText(trace *deflate.Trace, header *deflate.DynamicHeader, run deflate.CodeLengthRun) string {

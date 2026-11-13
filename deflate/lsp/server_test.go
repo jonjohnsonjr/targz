@@ -73,15 +73,11 @@ func TestDynamicLiteralDefinitionWalksToRFC(t *testing.T) {
 		if node.Line != 0 || node.Symbol != symbol || node.Parent != lengthRunLabel(block.ID, repeated) {
 			t.Fatalf("repeat run slot %d node = %#v", slot, node)
 		}
-		if node.Text != lengthAssignmentText(trace, run) {
-			t.Fatalf("repeat run slot %d text = %q, want %q", slot, node.Text, lengthAssignmentText(trace, run))
+		if node.Text != lengthAssignmentText(run) {
+			t.Fatalf("repeat run slot %d text = %q, want %q", slot, node.Text, lengthAssignmentText(run))
 		}
-		wire := mustBitString(trace, run.SymbolBits)
-		if run.ExtraBits.Len() != 0 {
-			wire += "·" + mustBitString(trace, run.ExtraBits)
-		}
-		if !strings.HasPrefix(node.Text, wire) || strings.Contains(node.Text, "run ") || !strings.Contains(node.Text, "# "+strconv.Itoa(int(run.Length))+" ") {
-			t.Fatalf("repeat run slot %d text = %q, want encoded bits and assigned length", slot, node.Text)
+		if node.Text != "length "+strconv.Itoa(int(run.Length)) {
+			t.Fatalf("repeat run slot %d text = %q, want only its semantic length", slot, node.Text)
 		}
 	}
 	runNode := nodes[lengthRunLabel(block.ID, repeated)]
@@ -340,6 +336,10 @@ func TestMatchOperandsHaveIndependentDefinitions(t *testing.T) {
 	}
 	assignmentDoc := s.docs[assignment[0].TargetURI]
 	assignmentNode := assignmentDoc.encoding[assignmentDoc.encodingLine[assignment[0].TargetSelectionRange.Start.Line]]
+	assignmentToken := assignmentDoc.encodingTok[assignmentNode.Label].Primary
+	if assignmentToken.Start.Character != len("length ") || assignmentToken.End.Character != len(assignmentNode.Text) {
+		t.Fatalf("length assignment selection = %#v in %q, want numeric value", assignmentToken, assignmentNode.Text)
+	}
 	program := definitionLinksAtCharacter(t, s, assignment[0].TargetURI,
 		assignment[0].TargetSelectionRange.Start.Line, assignment[0].TargetSelectionRange.Start.Character)
 	if len(program) != 1 || !strings.Contains(program[0].TargetURI, "length-program.gzsym") {

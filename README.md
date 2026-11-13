@@ -243,10 +243,11 @@ and HCLEN transmission slot 17 is line 17. `contrib/gzpls.lua` automatically
 gives only these generated documents a zero-based semantic gutter; trace, tar
 manifest, and RFC buffers retain their ordinary line-number display.
 
-Expanded `litlen-lengths` and `distance-lengths` rows show the on-wire
-code-length instruction beside the assigned length. Repeated assignments share
-the same `symbol·extra` pattern because one repeat instruction produced all of
-those semantic rows.
+Expanded `litlen-lengths` and `distance-lengths` rows show only their semantic
+assignment, such as `length 8`. Go to Definition leads to the single on-wire
+length-program instruction that produced the row; repeated rows therefore
+share a definition rather than misleadingly duplicating that instruction's
+bits.
 
 The generated files live only for the lifetime of the language server.
 Generated filenames include a fingerprint of the compressed source, so a
