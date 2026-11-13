@@ -33,6 +33,7 @@ func TestAPI(t *testing.T) {
 		"/api/decode?id=0",
 		"/api/origin?offset=1",
 		"/api/uses?start=0&end=1",
+		"/api/input?start=0&length=16",
 		"/api/output?start=0&length=3",
 	} {
 		t.Run(path, func(t *testing.T) {

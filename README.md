@@ -33,8 +33,11 @@ Or launch the interactive debugger:
 go run ./cmd/deflate-debug-web archive.tar.gz
 ```
 
-The web debugger is a dense, three-pane workbench: decoded output, the
-instruction stream, and the relationships behind the current selection.
+The web debugger is a dense, three-pane workbench: compressed input and decoded
+output, the instruction stream, and the relationships behind the current
+selection. Selecting an output byte highlights the exact compressed bits which
+produced its operation, including distinct Huffman-code and extra-bit spans,
+and reports the local expansion ratio.
 Back-references show their normalized seed beside the bytes they produce;
 dynamic blocks show the literal/length and distance paths side by side, from
 payload bits through the generated Huffman tables and back to the dynamic

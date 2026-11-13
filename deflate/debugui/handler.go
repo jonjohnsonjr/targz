@@ -29,6 +29,7 @@ func Handler(trace *deflate.Trace) http.Handler {
 	mux.HandleFunc("GET /api/decode", s.decode)
 	mux.HandleFunc("GET /api/origin", s.origin)
 	mux.HandleFunc("GET /api/uses", s.uses)
+	mux.HandleFunc("GET /api/input", s.input)
 	mux.HandleFunc("GET /api/output", s.output)
 	return mux
 }
@@ -38,9 +39,11 @@ type server struct {
 }
 
 type span struct {
-	Start string `json:"start"`
-	End   string `json:"end"`
-	Bits  uint64 `json:"bits"`
+	Start    string `json:"start"`
+	End      string `json:"end"`
+	StartBit uint64 `json:"startBit"`
+	EndBit   uint64 `json:"endBit"`
+	Bits     uint64 `json:"bits"`
 }
 
 type outSpan struct {
@@ -452,6 +455,38 @@ func (s *server) output(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (s *server) input(w http.ResponseWriter, r *http.Request) {
+	start, err := queryUint64(r, "start", 0)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	length, err := queryUint64(r, "length", 256)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	if length > 4096 {
+		length = 4096
+	}
+	total := uint64(s.trace.ConsumedBits())
+	if start > total {
+		writeError(w, fmt.Errorf("input bit %d is outside [0,%d]", start, total))
+		return
+	}
+	end := start + length
+	if end > total {
+		end = total
+	}
+	bitRange := deflate.BitRange{Start: deflate.BitPos(start), End: deflate.BitPos(end)}
+	bits, err := s.trace.BitString(bitRange)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, map[string]any{"startBit": start, "endBit": end, "bits": bits})
+}
+
 func viewBlock(block deflate.Block) blockView {
 	return blockView{
 		ID:     block.ID,
@@ -498,7 +533,10 @@ func (s *server) viewOp(op deflate.Op) opView {
 }
 
 func viewSpan(value deflate.BitRange) span {
-	return span{Start: value.Start.String(), End: value.End.String(), Bits: value.Len()}
+	return span{
+		Start: value.Start.String(), End: value.End.String(),
+		StartBit: uint64(value.Start), EndBit: uint64(value.End), Bits: value.Len(),
+	}
 }
 
 func viewOut(value deflate.OutRange) outSpan {
