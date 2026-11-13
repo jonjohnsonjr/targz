@@ -356,7 +356,7 @@ func (s *server) dynamicBlockLayers(block deflate.Block) []blockLayer {
 		bits, _ := s.trace.BitString(field.Input)
 		layers[0].Items = append(layers[0].Items, stage(
 			fmt.Sprintf("hclen:%d", i), fmt.Sprintf("slot %d", i), bits,
-			fmt.Sprintf("symbol %d → %d bits", field.Symbol, field.Length), "RFC transmission order", field.Input,
+			fmt.Sprintf("symbol %d → %d bits", field.Symbol, field.Length), "", field.Input,
 		))
 	}
 
@@ -372,7 +372,7 @@ func (s *server) dynamicBlockLayers(block deflate.Block) []blockLayer {
 			}
 			codeTree.Items = append(codeTree.Items, stage(
 				fmt.Sprintf("codelen:%d", code.Symbol), fmt.Sprintf("symbol %d", code.Symbol), codeBits(code),
-				fmt.Sprintf("%d-bit code", code.Bits), "canonical Huffman code", input,
+				fmt.Sprintf("%d-bit code", code.Bits), "from HCLEN", input,
 			))
 		}
 	}
@@ -427,7 +427,7 @@ func (s *server) dynamicBlockLayers(block deflate.Block) []blockLayer {
 			}
 			layer.Items = append(layer.Items, stage(
 				fmt.Sprintf("%s-code:%d", alphabet, code.Symbol), fmt.Sprintf("symbol %d", code.Symbol), codeBits(code),
-				meaning, fmt.Sprintf("canonical code · %d bits", code.Bits), run.Input,
+				meaning, fmt.Sprintf("%d bits", code.Bits), run.Input,
 			))
 		}
 		return layer

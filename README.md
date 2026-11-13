@@ -53,6 +53,10 @@ Dynamic headers can then be followed through the same construction hierarchy as
 the LSP: HCLEN vector, code-length tree, length program, expanded
 literal/length and distance lengths, and the two final canonical trees. Every
 entry points back to the transmitted header instruction from which it derives.
+Header exploration uses a dedicated layout: decoded output and the operation
+stream disappear, leaving the compressed bits above a single construction
+layer. Hovering any field or derived entry immediately highlights its source
+bits; clicking pins that provenance while the reader moves elsewhere.
 Back-references show their normalized seed beside the bytes they produce;
 dynamic-block decode mode shows the literal/length and distance paths side by
 side, from payload bits through the generated Huffman tables and back to the
