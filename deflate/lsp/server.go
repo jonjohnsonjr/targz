@@ -376,6 +376,13 @@ func (s *Server) handle(method string, raw json.RawMessage) (any, error) {
 				}
 				return []locationLink{}, nil
 			}
+			if containsPosition(tokens.Backref, at) {
+				if seed, ok := op.Seed(); ok {
+					if link, found := s.plaintextRangeDefinition(seed, tokens.Backref); found {
+						return []locationLink{link}, nil
+					}
+				}
+			}
 		}
 		if op.Kind == deflate.StoredOp && containsPosition(doc.tokens[op.ID].Output, at) {
 			if link, ok := s.plaintextDefinition(*op, doc.tokens[op.ID].Output); ok {
@@ -1478,6 +1485,20 @@ func (s *Server) plaintextDefinition(op deflate.Op, origin lspRange) (locationLi
 			continue
 		}
 		target := doc.plain.outputRange(deflate.OutRange{Start: start, End: end})
+		return locationLink{OriginSelectionRange: origin, TargetURI: doc.uri, TargetRange: target, TargetSelectionRange: target}, true
+	}
+	return locationLink{}, false
+}
+
+func (s *Server) plaintextRangeDefinition(output deflate.OutRange, origin lspRange) (locationLink, bool) {
+	for _, doc := range s.docs {
+		if doc.plain == nil || len(doc.plain.lineStarts) == 0 {
+			continue
+		}
+		if output.Start < doc.plain.entry.Data.Start || output.End > doc.plain.entry.Data.End {
+			continue
+		}
+		target := doc.plain.outputRange(output)
 		return locationLink{OriginSelectionRange: origin, TargetURI: doc.uri, TargetRange: target, TargetSelectionRange: target}, true
 	}
 	return locationLink{}, false

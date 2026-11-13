@@ -1069,6 +1069,7 @@ func TestAutoViewShowsNonTarContent(t *testing.T) {
 	}
 
 	text := []byte("hello from an ordinary gzip\n# gzpls is ordinary content here\nsecond line\n")
+	text = append(text, bytes.Repeat([]byte("a repeating plaintext phrase "), 40)...)
 	source := filepath.Join(t.TempDir(), "hello.txt.gz")
 	writeGzip(source, text)
 	var progress []ViewProgress
@@ -1117,6 +1118,26 @@ func TestAutoViewShowsNonTarContent(t *testing.T) {
 	backToPlain := definitionLinksAtCharacter(t, s, links[0].TargetURI, links[0].TargetSelectionRange.Start.Line, links[0].TargetSelectionRange.Start.Character)
 	if len(backToPlain) != 1 || backToPlain[0].TargetURI != uri {
 		t.Fatalf("root trace output definition = %#v, want plaintext", backToPlain)
+	}
+	traceDoc := s.docs[links[0].TargetURI]
+	var match deflate.Op
+	foundMatch := false
+	for _, op := range traceDoc.trace.Ops {
+		if op.Kind == deflate.MatchOp {
+			match, foundMatch = op, true
+			break
+		}
+	}
+	if !foundMatch {
+		t.Fatal("root text fixture contains no backreference")
+	}
+	seed, _ := match.Seed()
+	backref := traceDoc.tokens[match.ID].Backref
+	seedLinks := definitionLinksAtCharacter(t, s, traceDoc.uri, backref.Start.Line, backref.Start.Character)
+	wantSource := doc.plain.outputRange(seed)
+	if len(seedLinks) != 1 || seedLinks[0].TargetURI != uri || seedLinks[0].OriginSelectionRange != backref ||
+		seedLinks[0].TargetRange != wantSource || seedLinks[0].TargetSelectionRange != wantSource {
+		t.Fatalf("backreference definition = %#v, want plaintext seed %#v", seedLinks, wantSource)
 	}
 
 	trace, err := DisassembleFileView(source, false, "trace")

@@ -177,9 +177,12 @@ func TestNeovimTarDirectoryNavigation(t *testing.T) {
 	}
 	source := filepath.Join(repo, "tarfs", "testdata", "gsip.tar.gz")
 	plainSource := filepath.Join(temp, "hello.txt.gz")
+	plainContents := []byte("hello from an ordinary gzip\nsecond line\n")
+	plainContents = append(plainContents, bytes.Repeat([]byte("a repeating plaintext phrase "), 40)...)
+	plainContents = append(plainContents, '\n')
 	var compressed bytes.Buffer
 	zw := gzip.NewWriter(&compressed)
-	if _, err := zw.Write([]byte("hello from an ordinary gzip\nsecond line\n")); err != nil {
+	if _, err := zw.Write(plainContents); err != nil {
 		t.Fatal(err)
 	}
 	if err := zw.Close(); err != nil {
@@ -229,10 +232,38 @@ end), "gzpls did not attach to ordinary gzip")
 assert(vim.api.nvim_buf_get_lines(0, 0, 2, false)[1] == "hello from an ordinary gzip", "ordinary gzip did not open as plaintext")
 vim.api.nvim_win_set_cursor(0, {1, 1})
 assert(vim.fn.maparg("gri", "n") ~= "", "gzpls did not install gri mapping")
+local plain_client = assert(vim.lsp.get_clients({name = "gzpls", bufnr = 0})[1])
+assert(vim.wait(5000, function()
+  return plain_client.initialized
+end), "ordinary gzip client did not initialize")
+vim.wait(100, function() return false end, 10)
+local ready = assert(plain_client:request_sync("textDocument/implementation", {
+  textDocument = {uri = vim.uri_from_bufnr(0)},
+  position = {line = 0, character = 1},
+}, 5000, 0))
+assert(not ready.err and ready.result and #ready.result > 0, "ordinary gzip mapping was not ready: " .. vim.inspect(ready))
 vim.cmd("normal gri")
 assert(vim.wait(5000, function()
   return string.match(vim.api.nvim_buf_get_name(0), "/%%.gzpls/trace%%.deflate$") ~= nil
 end), "implementation did not enter the trace: " .. vim.api.nvim_buf_get_name(0))
+local match_line = vim.fn.search("←", "W")
+assert(match_line > 0, "trace contains no backreference")
+local backref_col = assert(string.find(vim.api.nvim_get_current_line(), "←", 1, true)) - 1
+vim.api.nvim_win_set_cursor(0, {match_line, backref_col})
+vim.cmd("normal gd")
+local plain_buf = vim.fn.bufnr(plain_source)
+assert(vim.wait(5000, function()
+  return vim.api.nvim_get_current_buf() == plain_buf
+end), "backreference definition did not return to plaintext: " .. vim.api.nvim_buf_get_name(0))
+local definition_ns = assert(vim.api.nvim_get_namespaces()["gzpls-definition"])
+local highlights = vim.api.nvim_buf_get_extmarks(0, definition_ns, 0, -1, {details = true})
+assert(#highlights == 1, "plaintext seed is not highlighted: " .. vim.inspect(highlights))
+local highlight = highlights[1]
+local cursor = vim.api.nvim_win_get_cursor(0)
+assert(cursor[1] == highlight[2] + 1 and cursor[2] == highlight[3],
+  "cursor did not land at highlighted seed start")
+assert(highlight[4].end_row > highlight[2] or highlight[4].end_col > highlight[3],
+  "highlighted plaintext seed is empty")
 vim.fn.writefile({"ok"}, marker)
 for _, client in ipairs(vim.lsp.get_clients({name = "gzpls"})) do
   client:stop(true)

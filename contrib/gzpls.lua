@@ -68,6 +68,42 @@ function M.setup(opts)
     root_dir = root_dir,
     filetypes = { "gzpls", "gzpls-symbols" },
   }
+  local definition_ns = vim.api.nvim_create_namespace("gzpls-definition")
+
+  local function show_definition(options)
+    if #options.items ~= 1 then
+      vim.fn.setqflist({}, " ", options)
+      vim.cmd("botright copen")
+      return
+    end
+
+    local item = options.items[1]
+    local buf = item.bufnr or vim.fn.bufadd(item.filename)
+    vim.fn.bufload(buf)
+    vim.cmd("normal! m'")
+    vim.bo[buf].buflisted = true
+    vim.api.nvim_win_set_buf(0, buf)
+    local row, col = item.lnum - 1, item.col - 1
+    vim.api.nvim_win_set_cursor(0, { row + 1, col })
+    vim.cmd("normal! zv")
+
+    local end_row = (item.end_lnum or item.lnum) - 1
+    local end_col = (item.end_col or item.col) - 1
+    vim.api.nvim_buf_clear_namespace(buf, definition_ns, 0, -1)
+    if end_row > row or end_col > col then
+      vim.api.nvim_buf_set_extmark(buf, definition_ns, row, col, {
+        end_row = end_row,
+        end_col = end_col,
+        hl_group = "Visual",
+        priority = 200,
+      })
+      vim.defer_fn(function()
+        if vim.api.nvim_buf_is_valid(buf) then
+          vim.api.nvim_buf_clear_namespace(buf, definition_ns, 0, -1)
+        end
+      end, 1500)
+    end
+  end
 
   local function attach(buf)
     if not vim.api.nvim_buf_is_valid(buf) then
@@ -80,7 +116,9 @@ function M.setup(opts)
     end
 
     local map_opts = { buffer = buf, silent = true }
-    vim.keymap.set("n", "gd", vim.lsp.buf.definition, map_opts)
+    vim.keymap.set("n", "gd", function()
+      vim.lsp.buf.definition({ on_list = show_definition })
+    end, map_opts)
     vim.keymap.set("n", "gri", vim.lsp.buf.implementation, map_opts)
     vim.keymap.set("n", "grr", vim.lsp.buf.references, map_opts)
     vim.keymap.set("n", "K", vim.lsp.buf.hover, map_opts)

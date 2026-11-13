@@ -167,9 +167,12 @@ offset. **Go to Implementation** on a character jumps directly to the trace
 operation which produces that exact byte range; **Find References** returns
 later DEFLATE matches which consume it.
 In the trace, Definition on a literal's displayed value or a match's `×length`
-returns to the intersecting plaintext range, while `←distance` continues to
-follow the match's copy source. This makes plaintext → implementation → trace →
-definition → plaintext a lossless navigation loop.
+returns to the intersecting plaintext range. Definition on `←distance` jumps
+to the start of the copied seed in plaintext and briefly highlights its full
+range. When no plaintext document is available it falls back to the immediate
+producing operations. This makes plaintext → implementation → trace → definition
+→ plaintext a lossless navigation loop, while implementation and call hierarchy
+retain the deeper provenance walk.
 
 Hovering a match makes the compact backreference legible without expanding the
 trace: it shows the copy distance and length, source and destination output
