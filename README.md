@@ -38,10 +38,13 @@ output, the instruction stream, and the relationships behind the current
 selection. Selecting an output byte highlights the exact compressed bits which
 produced its operation, including distinct Huffman-code and extra-bit spans,
 and reports the local expansion ratio.
+The inspector uses progressive disclosure: its default relationship view is a
+quiet literal origin or a back-reference copy map, while separate origin and
+decode modes expose byte ancestry and the full coding path only when needed.
 Back-references show their normalized seed beside the bytes they produce;
-dynamic blocks show the literal/length and distance paths side by side, from
-payload bits through the generated Huffman tables and back to the dynamic
-header which declared them. Decoded output can switch between a hex-editor view
+dynamic-block decode mode shows the literal/length and distance paths side by
+side, from payload bits through the generated Huffman tables and back to the
+dynamic header which declared them. Decoded output can switch between a hex-editor view
 and a readable ASCII view without losing byte-level selection or highlighting.
 Hover a byte or character to preview its producing compressed bits; click to
 pin it and trace its ancestry. Use `j`/`k` to step through operations and

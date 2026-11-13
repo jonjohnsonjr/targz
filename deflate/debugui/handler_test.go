@@ -61,7 +61,7 @@ func TestWorkbench(t *testing.T) {
 	if response.Code != http.StatusOK {
 		t.Fatalf("status = %d", response.Code)
 	}
-	for _, want := range []string{"deflate.inspect", "decoded output", "viewAscii", "relationships / decoding", "copy map", "decode stack"} {
+	for _, want := range []string{"deflate.inspect", "decoded output", "viewAscii", "inspectRelation", "inspectOrigin", "inspectDecode", "copy map", "decode stack"} {
 		if !bytes.Contains(response.Body.Bytes(), []byte(want)) {
 			t.Errorf("workbench HTML does not contain %q", want)
 		}
