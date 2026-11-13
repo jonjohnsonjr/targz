@@ -104,10 +104,12 @@ function M.setup(opts)
       "",
       "inflating expectations",
     }
+    vim.bo[buf].readonly = false
     vim.bo[buf].modifiable = true
     vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
     vim.bo[buf].modified = false
     vim.bo[buf].modifiable = false
+    vim.bo[buf].readonly = true
   end
 
   local function consume_progress(state, chunk)
@@ -184,17 +186,20 @@ function M.setup(opts)
           end
           jobs[event.buf] = nil
           if result.code ~= 0 then
+            vim.bo[event.buf].readonly = false
             vim.bo[event.buf].modifiable = true
             vim.api.nvim_buf_set_lines(event.buf, 0, -1, false, {
               "gzpls", "", "failed to inspect stream", "", table.concat(state.errors),
             })
             vim.bo[event.buf].modified = false
             vim.bo[event.buf].modifiable = false
+            vim.bo[event.buf].readonly = true
             vim.notify("gzpls disassemble failed", vim.log.levels.ERROR)
             return
           end
 
           local output = table.concat(state.output)
+          vim.bo[event.buf].readonly = false
           vim.bo[event.buf].modifiable = true
           vim.api.nvim_buf_set_lines(event.buf, 0, -1, false, split_lines(output))
           if output:find("# gzpls ", 1, true) then
