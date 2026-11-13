@@ -27,25 +27,28 @@ Print a trace and follow one output byte back to its origin:
 go run ./cmd/deflate-debug -origin 100 archive.tar.gz
 ```
 
-Or launch the interactive debugger:
+Or launch the interactive explainer:
 
 ```console
 go run ./cmd/deflate-debug-web archive.tar.gz
 ```
 
-The web debugger is a dense, four-region workbench. Compressed input and decoded
-output form the primary side-by-side comparison; the supporting instruction
-stream and focused inspector sit below them. Selecting an output byte highlights the exact compressed bits which
-produced its operation, including distinct Huffman-code and extra-bit spans,
-and reports the local expansion ratio.
-The inspector uses progressive disclosure: its default relationship view is a
-quiet literal origin or a back-reference copy map, while separate origin and
-decode modes expose byte ancestry and the full coding path only when needed.
+The web UI teaches the stream one operation at a time. A short explanation says
+what the current instruction accomplishes; the exact compressed bits and the
+text they produce stay side by side underneath it. A compact stream at the
+bottom makes literals and back-references visible as the rhythm of the file,
+without turning the main view into a trace table. Selecting an output byte
+highlights the exact compressed bits which produced it, including distinct
+Huffman-code and extra-bit spans, and reports the local expansion ratio.
+
+Deeper details remain available through progressive disclosure. The default
+view explains the current literal or copy, while “where from” follows byte
+ancestry and “bits → meaning” exposes the full coding path only when requested.
 Back-references show their normalized seed beside the bytes they produce;
 dynamic-block decode mode shows the literal/length and distance paths side by
 side, from payload bits through the generated Huffman tables and back to the
 dynamic header which declared them. Decoded output can switch between a hex-editor view
-and a readable ASCII view without losing byte-level selection or highlighting.
+and a readable text view (the default) without losing byte-level selection or highlighting.
 Hover a byte or character to preview its producing compressed bits; click to
 pin it and trace its ancestry. Use `j`/`k` to step through operations and
 `[`/`]` to page the trace. Every panel scrolls independently, including in the
