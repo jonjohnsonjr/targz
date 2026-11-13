@@ -47,7 +47,9 @@ Hover a byte or character to preview its producing compressed bits; click to
 pin it and trace its ancestry. Use `j`/`k` to step through operations and
 `[`/`]` to page the trace. Every panel scrolls independently, including in the
 two-row and narrow single-column layouts. It binds to a random localhost port
-by default.
+by default. The compressed and decoded panes retain substantial centered
+context windows (2,048 bits and 2,048 bytes respectively), so they remain
+meaningfully scrollable while the active mapping stays in view.
 
 #### `gzpls`: IDE-grade language intelligence for gzip
 
