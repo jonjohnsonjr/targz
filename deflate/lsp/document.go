@@ -17,6 +17,7 @@ import (
 	"strings"
 	"unicode"
 	"unicode/utf16"
+	"unicode/utf8"
 
 	"github.com/jonjohnsonjr/targz/deflate"
 )
@@ -214,18 +215,22 @@ func disassembleView(source string, raw bool, trace *deflate.Trace, requested st
 	out.WriteString("# DEFLATE trace · gd: value → code → header → RFC 1951\n")
 	fmt.Fprintf(&out, "# %d B out · %d blocks · %d ops\n\n", len(trace.Output), len(trace.Blocks), len(trace.Ops))
 	graph := buildEncodingGraph(trace)
+	commentColumn := traceCommentColumn(trace)
 	for _, block := range trace.Blocks {
-		fmt.Fprintf(&out, "block %d bits[%s:%s] # %s\n", block.ID, block.Input.Start, block.Input.End, block.Kind)
+		writeTraceComment(&out,
+			fmt.Sprintf("block %d bits[%s:%s]", block.ID, block.Input.Start, block.Input.End),
+			fmt.Sprint(block.Kind), commentColumn)
 		for _, op := range trace.Ops[block.FirstOp : block.FirstOp+block.NumOps] {
 			switch op.Kind {
 			case deflate.LiteralOp:
-				fmt.Fprintf(&out, "%s  # %s\n", mustBitString(trace, op.SymbolBits), quoteByte(op.Literal))
+				writeTraceComment(&out, mustBitString(trace, op.SymbolBits), quoteByte(op.Literal), commentColumn)
 			case deflate.StoredOp:
 				fmt.Fprintf(&out, "stored %d bytes\n", op.Length)
 			case deflate.MatchOp:
-				fmt.Fprintf(&out, "%s  %s  # ←%d ×%d\n",
+				writeTraceComment(&out, fmt.Sprintf("%s  %s",
 					codedOperand(trace, op.SymbolBits, op.LengthExtraBits),
-					codedOperand(trace, op.DistanceBits, op.DistanceExtraBits), op.Distance, op.Length)
+					codedOperand(trace, op.DistanceBits, op.DistanceExtraBits)),
+					fmt.Sprintf("←%d ×%d", op.Distance, op.Length), commentColumn)
 			}
 		}
 		out.WriteString("\n# definitions\n")
@@ -238,6 +243,34 @@ func disassembleView(source string, raw bool, trace *deflate.Trace, requested st
 	}
 	fmt.Fprintf(&out, "%s%s\n", headerPrefix, meta)
 	return out.Bytes(), nil
+}
+
+func traceCommentColumn(trace *deflate.Trace) int {
+	column := 0
+	for _, block := range trace.Blocks {
+		column = max(column, utf8.RuneCountInString(fmt.Sprintf("block %d bits[%s:%s]", block.ID, block.Input.Start, block.Input.End)))
+		for _, op := range trace.Ops[block.FirstOp : block.FirstOp+block.NumOps] {
+			var prefix string
+			switch op.Kind {
+			case deflate.LiteralOp:
+				prefix = mustBitString(trace, op.SymbolBits)
+			case deflate.MatchOp:
+				prefix = fmt.Sprintf("%s  %s",
+					codedOperand(trace, op.SymbolBits, op.LengthExtraBits),
+					codedOperand(trace, op.DistanceBits, op.DistanceExtraBits))
+			}
+			column = max(column, utf8.RuneCountInString(prefix))
+		}
+	}
+	return column + 2
+}
+
+func writeTraceComment(out *bytes.Buffer, prefix, comment string, column int) {
+	out.WriteString(prefix)
+	out.WriteString(strings.Repeat(" ", max(column-utf8.RuneCountInString(prefix), 2)))
+	out.WriteString("# ")
+	out.WriteString(comment)
+	out.WriteByte('\n')
 }
 
 func openDocument(uri, text string) *document {

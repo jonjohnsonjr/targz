@@ -12,6 +12,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/jonjohnsonjr/targz/deflate"
 )
@@ -184,8 +185,8 @@ func TestFixedLiteralDefinitionJumpsToRFCTable(t *testing.T) {
 	}
 	wantLines := []string{
 		"# DEFLATE trace · gd: value → code → header → RFC 1951",
-		"block 0 bits[0.0:2.2] # fixed",
-		"01110001  # 'A'",
+		"block 0 bits[0.0:2.2]  # fixed",
+		"01110001               # 'A'",
 	}
 	for _, want := range wantLines {
 		if !bytes.Contains(listing, []byte(want)) {
@@ -272,6 +273,26 @@ func TestMatchOperandsHaveIndependentDefinitions(t *testing.T) {
 	s.docs[uri] = doc
 	if doc.loadErr != nil {
 		t.Fatal(doc.loadErr)
+	}
+	commentColumn := -1
+	for lineNumber, line := range strings.Split(string(listing), "\n") {
+		_, isOp := doc.lineOp[lineNumber]
+		if !strings.HasPrefix(line, "block ") && !isOp {
+			continue
+		}
+		comment := strings.Index(line, "#")
+		if comment < 0 { // Stored blocks have no inline value comment.
+			continue
+		}
+		column := utf8.RuneCountInString(line[:comment])
+		if commentColumn < 0 {
+			commentColumn = column
+		} else if column != commentColumn {
+			t.Fatalf("comment on line %d is in column %d, want %d:\n%s", lineNumber+1, column+1, commentColumn+1, line)
+		}
+	}
+	if commentColumn < 0 {
+		t.Fatal("trace contains no inline comments")
 	}
 	matchID := -1
 	for _, op := range doc.trace.Ops {
