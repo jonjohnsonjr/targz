@@ -37,9 +37,12 @@ The web UI keeps the compressed bits and decoded text side by side as the
 primary document. Both panes page transparently and independently as they
 scroll, and mark block starts with quiet inline rules. There is no separate
 block chooser: scrolling is how the reader moves through blocks, while
-selecting a boundary opens its header construction below. Hovering or selecting
-decoded output reveals the corresponding compressed input without coupling the
-two scroll positions. A compact stream at the bottom makes literals and
+following a boundary link opens an addressable `?block=N#…` document state and
+its header construction below. Window transitions retain a concrete visible
+row from their overlap at the same pixel position; they never guess a
+replacement scroll percentage. Hovering or selecting decoded output reveals
+the corresponding compressed input without coupling the two scroll positions.
+A compact stream at the bottom makes literals and
 back-references visible as the rhythm of the file without turning the main view
 into a trace table. Selecting an output byte
 highlights the exact compressed bits which produced it, including distinct
