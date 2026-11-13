@@ -30,6 +30,7 @@ func TestAPI(t *testing.T) {
 		"/api/summary",
 		"/api/ops?start=0&limit=10",
 		"/api/op?id=0",
+		"/api/producer?offset=1",
 		"/api/decode?id=0",
 		"/api/origin?offset=1",
 		"/api/uses?start=0&end=1",

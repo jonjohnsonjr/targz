@@ -26,6 +26,7 @@ func Handler(trace *deflate.Trace) http.Handler {
 	mux.HandleFunc("GET /api/summary", s.summary)
 	mux.HandleFunc("GET /api/ops", s.ops)
 	mux.HandleFunc("GET /api/op", s.op)
+	mux.HandleFunc("GET /api/producer", s.producer)
 	mux.HandleFunc("GET /api/decode", s.decode)
 	mux.HandleFunc("GET /api/origin", s.origin)
 	mux.HandleFunc("GET /api/uses", s.uses)
@@ -177,6 +178,23 @@ func (s *server) op(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, s.viewOp(s.trace.Ops[id]))
+}
+
+func (s *server) producer(w http.ResponseWriter, r *http.Request) {
+	offset, err := queryUint64(r, "offset", 0)
+	if err != nil || offset >= uint64(len(s.trace.Output)) {
+		if err == nil {
+			err = fmt.Errorf("output offset %d is outside [0,%d)", offset, len(s.trace.Output))
+		}
+		writeError(w, err)
+		return
+	}
+	op, ok := s.trace.Producer(deflate.OutPos(offset))
+	if !ok {
+		writeError(w, fmt.Errorf("no producer for output offset %d", offset))
+		return
+	}
+	writeJSON(w, s.viewOp(op))
 }
 
 func (s *server) decode(w http.ResponseWriter, r *http.Request) {

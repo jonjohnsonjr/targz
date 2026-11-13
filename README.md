@@ -43,9 +43,9 @@ dynamic blocks show the literal/length and distance paths side by side, from
 payload bits through the generated Huffman tables and back to the dynamic
 header which declared them. Decoded output can switch between a hex-editor view
 and a readable ASCII view without losing byte-level selection or highlighting.
-Click a byte or character to trace its ancestry, use `j`/`k` to step through
-operations, and use `[`/`]` to page the trace. It binds to a random localhost
-port by default.
+Hover a byte or character to preview its producing compressed bits; click to
+pin it and trace its ancestry. Use `j`/`k` to step through operations and
+`[`/`]` to page the trace. It binds to a random localhost port by default.
 
 #### `gzpls`: IDE-grade language intelligence for gzip
 
