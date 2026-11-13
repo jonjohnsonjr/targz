@@ -33,6 +33,7 @@ func TestAPI(t *testing.T) {
 		"/api/producer?offset=1",
 		"/api/input-anchor?bit=48",
 		"/api/decode?id=0",
+		"/api/block?id=0",
 		"/api/origin?offset=1",
 		"/api/uses?start=0&end=1",
 		"/api/input?start=0&length=16",
@@ -52,6 +53,28 @@ func TestAPI(t *testing.T) {
 				t.Fatal(err)
 			}
 		})
+	}
+}
+
+func TestStoredBlockHeader(t *testing.T) {
+	request := httptest.NewRequest(http.MethodGet, "/api/block?id=0", nil)
+	response := httptest.NewRecorder()
+	Handler(testTrace(t)).ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", response.Code, response.Body.String())
+	}
+	var view blockDetailView
+	if err := json.NewDecoder(response.Body).Decode(&view); err != nil {
+		t.Fatal(err)
+	}
+	levels := make(map[string]bool)
+	for _, field := range view.Fields {
+		levels[field.Level] = true
+	}
+	for _, level := range []string{"BFINAL", "BTYPE", "alignment", "LEN", "NLEN"} {
+		if !levels[level] {
+			t.Fatalf("stored header missing %q: %#v", level, view.Fields)
+		}
 	}
 }
 
@@ -146,6 +169,16 @@ func TestDynamicDecodeStack(t *testing.T) {
 				t.Fatalf("%s branch missing %q: %#v", branch.Name, level, branch.Stages)
 			}
 		}
+	}
+	blockRequest := httptest.NewRequest(http.MethodGet, "/api/block?id="+strconv.Itoa(view.BlockID), nil)
+	blockResponse := httptest.NewRecorder()
+	Handler(trace).ServeHTTP(blockResponse, blockRequest)
+	var blockView blockDetailView
+	if err := json.NewDecoder(blockResponse.Body).Decode(&blockView); err != nil {
+		t.Fatal(err)
+	}
+	if len(blockView.Fields) != 5 || blockView.Runs == 0 {
+		t.Fatalf("dynamic block header = %#v, want five primary fields and length runs", blockView)
 	}
 }
 

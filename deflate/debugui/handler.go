@@ -30,6 +30,7 @@ func Handler(trace *deflate.Trace) http.Handler {
 	mux.HandleFunc("GET /api/producer", s.producer)
 	mux.HandleFunc("GET /api/input-anchor", s.inputAnchor)
 	mux.HandleFunc("GET /api/decode", s.decode)
+	mux.HandleFunc("GET /api/block", s.block)
 	mux.HandleFunc("GET /api/origin", s.origin)
 	mux.HandleFunc("GET /api/uses", s.uses)
 	mux.HandleFunc("GET /api/input", s.input)
@@ -109,6 +110,13 @@ type decodeView struct {
 	Block    string         `json:"block"`
 	Branches []decodeBranch `json:"branches"`
 	Header   []decodeStage  `json:"header,omitempty"`
+}
+
+type blockDetailView struct {
+	Block  blockView     `json:"block"`
+	Fields []decodeStage `json:"fields"`
+	Bits   string        `json:"bits"`
+	Runs   int           `json:"runs,omitempty"`
 }
 
 func (s *server) index(w http.ResponseWriter, _ *http.Request) {
@@ -265,6 +273,55 @@ func (s *server) decode(w http.ResponseWriter, r *http.Request) {
 			s.headerStage("HDIST", block.Dynamic.HDIST, block.Dynamic.NumDistanceLengths, "distance code lengths"),
 			s.headerStage("HCLEN", block.Dynamic.HCLEN, block.Dynamic.NumCodeLengths, "code-length code lengths"),
 		}
+	}
+	writeJSON(w, view)
+}
+
+func (s *server) block(w http.ResponseWriter, r *http.Request) {
+	id, err := queryInt(r, "id", -1)
+	if err != nil || id < 0 || id >= len(s.trace.Blocks) {
+		if err == nil {
+			err = fmt.Errorf("block id %d is outside [0,%d)", id, len(s.trace.Blocks))
+		}
+		writeError(w, err)
+		return
+	}
+	block := s.trace.Blocks[id]
+	view := blockDetailView{Block: viewBlock(block)}
+	view.Bits, _ = s.trace.BitString(block.Header)
+	field := func(key, level string, input deflate.BitRange, value, detail string) decodeStage {
+		bits, _ := s.trace.BitString(input)
+		inputView := viewSpan(input)
+		return decodeStage{Key: key, Level: level, Bits: bits, Input: &inputView, Value: value, Detail: detail}
+	}
+	finalInput := deflate.BitRange{Start: block.Input.Start, End: block.Input.Start + 1}
+	typeInput := deflate.BitRange{Start: block.Input.Start + 1, End: block.Input.Start + 3}
+	finalValue := "more blocks follow"
+	if block.Final {
+		finalValue = "last block"
+	}
+	view.Fields = append(view.Fields,
+		field("block:bfinal", "BFINAL", finalInput, finalValue, "one bit"),
+		field("block:btype", "BTYPE", typeInput, block.Kind.String(), "two bits"),
+	)
+	if block.Dynamic != nil {
+		view.Fields = append(view.Fields,
+			s.headerStage("HLIT", block.Dynamic.HLIT, block.Dynamic.NumLiteralLengths, "literal/length code lengths"),
+			s.headerStage("HDIST", block.Dynamic.HDIST, block.Dynamic.NumDistanceLengths, "distance code lengths"),
+			s.headerStage("HCLEN", block.Dynamic.HCLEN, block.Dynamic.NumCodeLengths, "code-length code lengths"),
+		)
+		view.Runs = len(block.Dynamic.LengthRuns)
+	}
+	if block.Kind == deflate.StoredBlock && block.Header.Len() >= 32 {
+		lengthStart := block.Header.End - 32
+		if alignment := (deflate.BitRange{Start: typeInput.End, End: lengthStart}); alignment.Len() != 0 {
+			view.Fields = append(view.Fields, field("block:alignment", "alignment", alignment, "discarded", "zero to seven bits"))
+		}
+		length := int(block.Output.End - block.Output.Start)
+		view.Fields = append(view.Fields,
+			field("block:len", "LEN", deflate.BitRange{Start: lengthStart, End: lengthStart + 16}, strconv.Itoa(length), "stored byte count"),
+			field("block:nlen", "NLEN", deflate.BitRange{Start: lengthStart + 16, End: block.Header.End}, strconv.Itoa(int(^uint16(length))), "one's complement of LEN"),
+		)
 	}
 	writeJSON(w, view)
 }

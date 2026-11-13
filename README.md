@@ -44,6 +44,11 @@ Huffman-code and extra-bit spans, and reports the local expansion ratio.
 Deeper details remain available through progressive disclosure. The default
 view explains the current literal or copy, while “where from” follows byte
 ancestry and “bits → meaning” exposes the full coding path only when requested.
+Each block begins with its own lesson: BFINAL and BTYPE are selectable for every
+block; dynamic blocks also expose HLIT, HDIST, and HCLEN; stored blocks expose
+alignment, LEN, and NLEN. Selecting a field focuses its exact input bits. Block
+headers are part of sequential stepping, so crossing a block boundary pauses to
+explain the next block before decoding its first operation.
 Back-references show their normalized seed beside the bytes they produce;
 dynamic-block decode mode shows the literal/length and distance paths side by
 side, from payload bits through the generated Huffman tables and back to the
