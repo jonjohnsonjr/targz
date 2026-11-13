@@ -124,8 +124,9 @@ for _ = 1, 8 do
   end
   if string.match(link.targetUri, "litlen%%-lengths%%.gzsym$") then
     assert(vim.fn.line(".") - 1 == position.line, "litlen-lengths semantic line is not zero-based")
-    assert(string.match(vim.api.nvim_get_current_line(), "^# %%d+ bits?$"),
-      "broken litlen-lengths row: " .. vim.api.nvim_get_current_line())
+    local row = vim.api.nvim_get_current_line()
+    assert(string.match(row, "^[01]+") and string.match(row, "# %%d+ bits?$"),
+      "broken litlen-lengths row: " .. row)
     reached_lengths = true
   end
 end
