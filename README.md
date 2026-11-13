@@ -33,11 +33,14 @@ Or launch the interactive explainer:
 go run ./cmd/deflate-debug-web archive.tar.gz
 ```
 
-The web UI teaches the stream one operation at a time. A short explanation says
-what the current instruction accomplishes; the exact compressed bits and the
-text they produce stay side by side underneath it. A compact stream at the
-bottom makes literals and back-references visible as the rhythm of the file,
-without turning the main view into a trace table. Selecting an output byte
+The web UI keeps the compressed bits and decoded text side by side as the
+primary document. Both panes page transparently as they scroll, remain loosely
+locked by provenance rather than byte position, and mark block starts with
+quiet inline rules. There is no separate block chooser: scrolling is how the
+reader moves through blocks, while selecting a boundary opens its header
+construction below. A compact stream at the bottom makes literals and
+back-references visible as the rhythm of the file without turning the main view
+into a trace table. Selecting an output byte
 highlights the exact compressed bits which produced it, including distinct
 Huffman-code and extra-bit spans, and reports the local expansion ratio.
 
@@ -53,10 +56,10 @@ Dynamic headers can then be followed through the same construction hierarchy as
 the LSP: HCLEN vector, code-length tree, length program, expanded
 literal/length and distance lengths, and the two final canonical trees. Every
 entry points back to the transmitted header instruction from which it derives.
-Header exploration uses a dedicated layout: decoded output and the operation
-stream disappear, leaving the compressed bits above a single construction
-layer. Hovering any field or derived entry immediately highlights its source
-bits; clicking pins that provenance while the reader moves elsewhere.
+Header exploration stays in the contextual lower pane, so the compressed and
+decoded streams remain visible. Hovering any field or derived entry immediately
+highlights its source bits; clicking pins that provenance while the reader
+moves elsewhere.
 Back-references show their normalized seed beside the bytes they produce;
 dynamic-block decode mode shows the literal/length and distance paths side by
 side, from payload bits through the generated Huffman tables and back to the
